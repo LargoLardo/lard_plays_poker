@@ -213,13 +213,13 @@ export async function createTableScene(canvas, host) {
   }));
   leatherMap.wrapS = leatherMap.wrapT = THREE.RepeatWrapping;
   leatherMap.repeat.set(6, 6);
-  const glove = standard({ color: "#25292b", roughness: .52, bumpMap: leatherMap, bumpScale: .004 });
+  const glove = standard({ color: "#f4f1e7", roughness: .76, bumpMap: leatherMap, bumpScale: .002 });
   const sleeve = standard({ color: "#0e1315", roughness: .95 });
   const cuffGeometry = geometry(new THREE.CylinderGeometry(.095, .15, 1.5, 32));
   const handBasis = new THREE.Matrix4().makeBasis(
     new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, -1, 0), new THREE.Vector3(1, 0, 0),
   );
-  function makeHand(side, curl = .15) {
+  function makeHand(side, curl = .3) {
     const group = new THREE.Group();
     const model = cloneSkeleton(handModels[side === "left" ? 0 : 1].scene);
     const wrist = model.getObjectByName("wrist");
@@ -261,16 +261,23 @@ export async function createTableScene(canvas, host) {
   }
   const opponentHands = [makeHand("right"), makeHand("left")];
   opponentHands.forEach((hand, i) => {
-    hand.position.set(i ? .95 : -.95, .10, -2.38);
+    hand.position.set(i ? 1.2 : -1.2, 0, -2.38);
     hand.rotation.set(Math.PI / 2, Math.PI, i ? .18 : -.18);
     scene.add(hand);
   });
   const bettingHand = makeHand("left", .3);
-  bettingHand.position.set(-1.9, .11, 2.3);
+  bettingHand.position.set(-1.9, 0, 2.6);
   bettingHand.rotation.set(Math.PI / 2, Math.PI, Math.PI - .7);
   scene.add(bettingHand);
   const gestureHands = [...opponentHands, bettingHand];
-  gestureHands.forEach((hand) => { hand.userData.rest = hand.position.clone(); });
+  gestureHands.forEach((hand) => {
+    // Measure the posed skin, including fingertips and sleeves, rather than the
+    // bind-pose bounds. All gestures lift from this clearance above the felt.
+    hand.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(hand, true);
+    hand.position.y += .055 - bounds.min.y;
+    hand.userData.rest = hand.position.clone();
+  });
 
   // A separate foreground pass prevents the table and chip stacks from cutting
   // through your held cards. The two cards have distinct, parallel depth planes.
@@ -280,8 +287,9 @@ export async function createTableScene(canvas, host) {
   pocket.add(pocketPose);
   const heldCards = new THREE.Group();
   pocketPose.add(heldCards);
-  const grip = makeHand("right", .8);
-  grip.position.set(.32, -.68, .27);
+  // Tuck the fingers below the card edge, with the thumb in front of the face.
+  const grip = makeHand("right", 1.2);
+  grip.position.set(.32, -.76, .32);
   grip.rotation.set(0, .10, -.30);
   pocketPose.add(grip);
   foreground.add(new THREE.HemisphereLight("#e1e9e3", "#30372e", 1.6));
@@ -336,7 +344,7 @@ export async function createTableScene(canvas, host) {
         const before = object.material, after = getCardMaterial(card);
         animate(460, (t) => {
           object.rotation.z = Math.sin(t * Math.PI) * Math.PI / 2;
-          object.position.y = .042 + Math.sin(t * Math.PI) * .18;
+          object.position.y = .042 + Math.sin(object.rotation.z) * .30;
           object.material = t < .5 ? before : after;
         });
         object.userData.card = card;
@@ -356,8 +364,8 @@ export async function createTableScene(canvas, host) {
       if (slot.startsWith("board")) object.scale.setScalar(1.24);
     }
     const target = object.position.clone();
-    if (!reducedMotion.matches) {
-      object.position.set(x - .1, held ? -.3 : .28, z - (held ? 0 : .25));
+    if (!held && !reducedMotion.matches) {
+      object.position.set(x - .1, .28, z - .25);
       const from = object.position.clone();
       animate(360, (t) => {
         object.position.lerpVectors(from, target, ease(t));
@@ -496,9 +504,9 @@ export async function createTableScene(canvas, host) {
       hand.position.copy(rest);
       if (check) hand.position.y += Math.sin(t * Math.PI * 2) ** 2 * .045;
       else {
-        hand.position.x += reach * (player === user ? .85 : .45);
+        hand.position.x += reach * (player === user ? .85 : .12);
         hand.position.z += reach * (player === user ? -.3 : .58);
-        hand.position.y += reach * .025;
+        hand.position.y += reach * (player === user ? .25 : .025);
       }
     });
   }
@@ -633,6 +641,9 @@ export async function createTableScene(canvas, host) {
       chipSignature = "";
       host.dataset.action = "deal";
       renderedHand = state;
+      // Lift the cards and the gripping hand together; sliding cards through a
+      // stationary grip creates intersections during the deal.
+      animate(430, (t) => { pocketPose.position.y = -.65 * (1 - ease(t)); });
     }
     const signature = JSON.stringify([hole[user], agentCards, board]);
     if (signature !== cardSignature) {

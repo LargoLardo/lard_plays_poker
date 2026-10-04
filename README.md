@@ -5,7 +5,7 @@
 The browser table puts you in a first-person poker room, holding your cards
 above green felt and a dark wood rail. A single overhead light picks out
 the table and your opponent's hands; the rest of the room fades into darkness.
-Rigged leather-gloved hands hold your cards and gesture when checking or betting.
+Rigged white-gloved hands hold your cards and gesture when checking or betting.
 Beveled chips slide into bets, collect between streets, and move to the winner;
 folds and showdown reveals are animated too. The scene respects reduced-motion
 preferences. The hand meshes are bundled locally under the MIT license; see
