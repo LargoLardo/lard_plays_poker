@@ -119,6 +119,23 @@ accumulated nodes and RNG state,
 but bounded equity caches are recomputed, so full-game resumes need not be
 bit-for-bit identical to uninterrupted runs. Only load trusted pickle files.
 
+Both Python trainers also accept `--snapshot-every N` to retain a separate
+nodeset every N completed hands. For example:
+
+```bash
+python full_game_mccfr.py --iterations 1000000 --snapshot-every 100000 --output nodesets/full-game.pkl
+```
+
+This keeps the main checkpoint and writes `nodesets/full-game-snapshots/iter-100000.pkl`,
+`iter-200000.pkl`, and so on. The default `0` disables snapshots. Counts are
+cumulative; repeat the flag when resuming. Scheduled snapshots preserve existing
+files. To train from an earlier snapshot, give a separate `--output` to preserve
+that snapshot. Multiworker batches stop at exact snapshot boundaries, which can
+change batching and the training trajectory. There is no fixed number of
+snapshots; disk space and write time are the constraints. These are training
+stages, and playing strength needs separate evaluation. The C++ equivalent is
+documented in [cpp/README.md](cpp/README.md#keeping-models-at-different-training-stages).
+
 New training also samples equity from cards unknown to the acting player,
 uses deuce-through-ace rank order for straight-draw flags, freezes regret
 matching before exploring a node's children, and caps raises using the remaining

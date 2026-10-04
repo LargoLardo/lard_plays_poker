@@ -69,6 +69,48 @@ at completion, at a limit, and after Ctrl+C/SIGTERM. Signals finish the current
 hand before saving. A hard kill or power loss can lose work since the last
 successful save; the temporary file is not a resume checkpoint.
 
+## Keeping models at different training stages
+
+Add `--snapshot-every N` to retain a separate nodeset every N completed hands,
+alongside the main checkpoint. For example, a 100M-hand run with snapshots every
+1M hands produces 100 snapshots plus the main checkpoint:
+
+```bash
+caffeinate -i ./cpp/run.sh --iterations 100000000 --samples 500 --memory-mb 256 \
+  --snapshot-every 1000000 --output nodesets/cpp/full-100m-s500.bin
+```
+
+The main checkpoint is `nodesets/cpp/full-100m-s500.bin`. Retained checkpoints
+are grouped in `nodesets/cpp/full-100m-s500-snapshots/`, named
+`iter-1000000.bin`, `iter-2000000.bin`, and so on. Counts are cumulative across
+resumes; snapshots contain the exact completed-hand count, node weights, and RNG
+state. They stream to disk without duplicating the model in RAM. Existing
+snapshot paths are kept and reported rather than replaced. `--snapshot-every 0`
+(the default) disables retained snapshots. Repeat the option when resuming:
+
+```bash
+./cpp/run.sh --resume nodesets/cpp/full-100m-s500.bin --iterations 100000000 --snapshot-every 1000000
+```
+
+The main checkpoint still saves on its seconds-based interval, at the end of a
+run, on interruption, and at memory limits, including between snapshot milestones.
+There is no configured snapshot-count limit; available disk space and save time
+are the constraints. With the current 100bb full-game action tree, an upper
+bound of 236,442 keys gives roughly 14.2 MB per native snapshot, or about 1.4 GB
+for 100 snapshots. Actual files are usually smaller. Different training stages
+do not guarantee increasing playing strength; evaluate them before assigning
+difficulty levels.
+
+To continue from an earlier snapshot, use a separate `--output` so the original
+snapshot stays intact. A zero-iteration export can read any snapshot as well:
+
+```bash
+./cpp/run.sh --resume nodesets/cpp/full-100m-s500-snapshots/iter-10000000.bin \
+  --iterations 10000000 --snapshot-every 1000000 --output nodesets/cpp/fork.bin
+./cpp/run.sh --resume nodesets/cpp/full-100m-s500-snapshots/iter-10000000.bin \
+  --iterations 0 --output nodesets/cpp/export-source.bin --export nodesets/cpp/model-10m
+```
+
 ## Using a trained model
 
 Export the exact JSON key/weight format used by the existing browser app:

@@ -213,6 +213,7 @@ Validation: all 18 Python/native differential tests pass, including 12,005
 Treys evaluator comparisons, 250 PokerKit betting sequences, averaging-phase
 checks, legacy resume guards, checkpoint/resume, memory rollback, and the joint
 sample/cache regression. Native unit checks also pass under AddressSanitizer
-and UndefinedBehaviorSanitizer. Benchmarks and inspected native checkpoints
-remain local under ignored `artifacts/` and `nodesets/`; bundled models were not
-modified or replaced.
+and UndefinedBehaviorSanitizer. Benchmark logs and audit reports remain local
+under ignored `artifacts/`. Temporary test/benchmark nodesets were subsequently
+removed during cleanup; the current training checkpoint and bundled models were
+preserved.
