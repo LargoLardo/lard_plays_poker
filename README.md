@@ -2,8 +2,9 @@
 
 ## Play in the browser
 
-The browser table places you in a softly lit 3D poker room, with green felt,
-a dark wood rail, and an opponent whose hands emerge from the darkness.
+The browser table puts you in a first-person poker room, holding your cards
+above green felt and a dark wood rail. A single overhead light picks out
+the table and your opponent's hands; the rest of the room fades into darkness.
 Cards, bets, and chip stacks follow the bundled 10-million-iteration full-game
 strategy. The filterable 13x13 strategy explorer lives in Study, and the
 player's stack persists between completed hands in browser storage.
