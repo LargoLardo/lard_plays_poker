@@ -82,7 +82,34 @@ Key libraries: `pokerkit`, `numpy`, `torch`, `tqdm`, `networkx`.
 | `protos/*.py` | Earlier or alternate prototypes (Hold’em setup, random sims, CFR variants). |
 | `FULLGAME_10m_iters.pkl` | Example pickled nodeset trained on 10m iterations |
 
-Training scripts load and save pickle node dictionaries; default paths are configured inside each script. Large node sets and logs are kept **out of Git** (see below).
+The original Python trainers remain available. Install only their dependencies
+with `pip install -r requirements-training.txt`, then run:
+
+```bash
+python full_game_mccfr.py --iterations 100000 --output nodesets/full-game.pkl
+python full_game_mccfr.py --iterations 100000 --resume nodesets/full-game.pkl
+python pf_mccfr.py --iterations 100000 --output nodesets/preflop.pkl
+```
+
+`--iterations` means additional hands. Training defaults to one worker, updating
+one node store instead of copying it to every CPU. Each equity cache is capped
+at 10,000 entries (`--cache-size 0` disables caching). `--max-nodes 200000`
+stops growth after the current hand; an explicit multiworker run checks this
+limit after each batch and can overshoot by a batch's new nodes. Use
+`--workers 1` for minimum RAM, or explicitly choose `--workers N --chunk-size N`.
+This node limit controls growth, not exact process RSS.
+
+Checkpoints save atomically every 60 seconds and at completion, interruption, or
+the node limit. Set the interval with `--checkpoint-every`; use `--resume` to
+continue. New runs refuse to overwrite existing outputs. New checkpoints remain
+pickle node dictionaries usable by the agents and browser exporter; old pickles
+can also be resumed. Python resumes preserve accumulated nodes and RNG state,
+but bounded equity caches are recomputed, so full-game resumes need not be
+bit-for-bit identical to uninterrupted runs. Only load trusted pickle files.
+
+New training also samples equity from cards unknown to the acting player, and
+caps raises using the remaining stack plus chips already bet. Existing bundled
+models remain intact. Large node sets and logs are kept **out of Git**.
 
 Directory `nodesets/` is created locally for trained `.pkl` files referenced by the agents.
 

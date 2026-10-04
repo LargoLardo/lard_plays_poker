@@ -1,19 +1,10 @@
 import random
-import os
 import pickle
-from datetime import datetime
-from tqdm import tqdm
 from pokerkit import Automation, Mode, NoLimitTexasHoldem, State
-from collections import defaultdict
-from utils.logger import Logger
+from utils.training import TrainingNode, train_loop, training_main
 from utils.bucketer import Bucketer
-from multiprocessing import Pool
 
-# analytics imports
-import cProfile
-import pstats
 
-# sys.setrecursionlimit(10000)
 
 def is_terminal(state: State) -> bool:
     return state.actor_index is None
@@ -23,18 +14,8 @@ def payoff_p0(state: State):
 
 # ── Info-set node ──────────────────────────────────────────────────────────────
 
-class Node:
-    def __init__(self):
-        self.regret_sum   = defaultdict(float)
-        self.strategy_sum = defaultdict(float)
-        self.times_visited = 0
-
-    def clone(self):
-        new = Node()
-        new.regret_sum.update(self.regret_sum)
-        new.strategy_sum.update(self.strategy_sum)
-        new.times_visited = self.times_visited
-        return new
+class Node(TrainingNode):
+    __slots__ = ()
 
 # ── External sampling MCCFR ────────────────────────────────────────────────────
 
@@ -65,8 +46,8 @@ def mccfr(state: State, traverser: int, histories: list[list[str]], base_nodes: 
     delta_node = delta_nodes[bucket]
 
     def current_regret(action):
-        base_val = base_node.regret_sum[action] if base_node else 0.0
-        delta_val = delta_node.regret_sum[action]
+        base_val = base_node.regret_sum.get(action, 0.0) if base_node else 0.0
+        delta_val = delta_node.regret_sum.get(action, 0.0)
         return base_val + delta_val
 
     def get_current_strategy(actions):
@@ -75,77 +56,39 @@ def mccfr(state: State, traverser: int, histories: list[list[str]], base_nodes: 
             return {a: max(current_regret(a), 0.0) / pos for a in actions}
         return {a: 1.0 / len(actions) for a in actions}
 
+    amount = get_pf_raise_size(state, bucket) if state.street_index == 0 else get_halfp_raise_size(state, bucket)
+    if not state.can_complete_bet_or_raise_to(amount):
+        actions.remove('raise')
+    # Freeze regret matching before exploring children of this information set.
+    strat = get_current_strategy(actions)
+
+    def next_position(action):
+        next_state = pickle.loads(pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL))
+        next_history = [h.copy() for h in histories]
+        if action == 'fold':
+            next_state.fold()
+        elif action == 'check/call':
+            next_state.check_or_call()
+        else:
+            next_state.complete_bet_or_raise_to(amount)
+        next_history[state.street_index].append(action)
+        return next_state, next_history
+
     if cur_actor == traverser:
         delta_node.times_visited += 1
         utils = {}
-        legal_actions = []
-
         for action in actions:
-            next_state = pickle.loads(pickle.dumps(state))
-            next_histories = [h.copy() for h in histories]
-
-            if action == 'fold':
-                next_state.fold()
-                next_histories[state.street_index].append('fold')
-                legal_actions.append(action)
-                utils[action] = mccfr(next_state, traverser, next_histories, base_nodes, delta_nodes, bucketer)
-
-            elif action == 'check/call':
-                next_state.check_or_call()
-                next_histories[state.street_index].append('check/call')
-                legal_actions.append(action)
-                utils[action] = mccfr(next_state, traverser, next_histories, base_nodes, delta_nodes, bucketer)
-
-            elif action == 'raise':
-                if state.street_index == 0: 
-                    amount = get_pf_raise_size(state, bucket)
-                else: 
-                    amount = get_halfp_raise_size(state, bucket)
-                if next_state.can_complete_bet_or_raise_to(amount):
-                    next_state.complete_bet_or_raise_to(amount)
-                    next_histories[state.street_index].append('raise')
-                    legal_actions.append(action)
-                    utils[action] = mccfr(next_state, traverser, next_histories, base_nodes, delta_nodes, bucketer)
-
-        actions = legal_actions
-        strat = get_current_strategy(actions)
-
+            next_state, next_history = next_position(action)
+            utils[action] = mccfr(next_state, traverser, next_history, base_nodes, delta_nodes, bucketer)
+        node_util = sum(strat[a] * utils[a] for a in actions)
         for action in actions:
             delta_node.strategy_sum[action] += strat[action]
-
-        node_util = sum(strat[a] * utils[a] for a in actions)
-
-        for action in actions:
             delta_node.regret_sum[action] += utils[action] - node_util
-
         return node_util
 
-    else:
-        next_state = pickle.loads(pickle.dumps(state))
-        next_histories = [h.copy() for h in histories]
-
-        if state.street_index == 0: 
-            amount = get_pf_raise_size(state, bucket)
-        else: 
-            amount = get_halfp_raise_size(state, bucket)
-
-        if not next_state.can_complete_bet_or_raise_to(amount):
-            actions = [a for a in actions if a != 'raise']
-
-        strat = get_current_strategy(actions)
-        sampled_action = random.choices(actions, weights=[strat[a] for a in actions])[0]
-
-        if sampled_action == 'fold':
-            next_state.fold()
-            next_histories[state.street_index].append('fold')
-        elif sampled_action == 'check/call':
-            next_state.check_or_call()
-            next_histories[state.street_index].append('check/call')
-        else:
-            next_state.complete_bet_or_raise_to(amount)
-            next_histories[state.street_index].append('raise')
-
-        return mccfr(next_state, traverser, next_histories, base_nodes, delta_nodes, bucketer)
+    action = random.choices(actions, weights=[strat[a] for a in actions])[0]
+    next_state, next_history = next_position(action)
+    return mccfr(next_state, traverser, next_history, base_nodes, delta_nodes, bucketer)
 
 # -- Helper functions -------------------------------
 
@@ -155,57 +98,47 @@ def clone_nodes(nodes: dict) -> dict:
 def get_halfp_raise_size(state: State, bucket: tuple) -> float:
     amount = max(state.bets) + state.total_pot_amount * 1/2 #Raises half pot by default
     amount = round(amount)
-    if 'vs_4bet' in bucket or amount > state.stacks[state.actor_index]:
-        all_in_amt = state.stacks[state.actor_index]
-        min_bet = state.min_completion_betting_or_raising_to_amount
-        if min_bet is None:
-            min_bet = 0
-        amount = all_in_amt if all_in_amt >= min_bet else None
+    maximum = state.stacks[state.actor_index] + state.bets[state.actor_index]
+    amount = maximum if 'vs_4bet' in bucket else min(amount, maximum)
     return amount
 
 def get_pf_raise_size(state: State, bucket: tuple) -> float:
     amount = max(state.bets) * 3
     amount = round(amount)
-    if 'vs_4bet' in bucket or amount > state.stacks[state.actor_index]:
-        all_in_amt = state.stacks[state.actor_index]
-        min_bet = state.min_completion_betting_or_raising_to_amount
-        if min_bet is None:
-            min_bet = 0
-        amount = all_in_amt if all_in_amt >= min_bet else None
+    maximum = state.stacks[state.actor_index] + state.bets[state.actor_index]
+    amount = maximum if 'vs_4bet' in bucket else min(amount, maximum)
     return amount
 
 def get_rand_raise_size(state: State, bucket: tuple) -> float:
     amount = max(state.bets) + state.total_pot_amount * random.choice((1/3, 1/2, 2/3, 1))
     amount = round(amount)
-    if 'vs_4bet' in bucket or amount > state.stacks[state.actor_index]:
-        all_in_amt = state.stacks[state.actor_index]
-        min_bet = state.min_completion_betting_or_raising_to_amount
-        if min_bet is None:
-            min_bet = 0
-        amount = all_in_amt if all_in_amt >= min_bet else None
+    maximum = state.stacks[state.actor_index] + state.bets[state.actor_index]
+    amount = maximum if 'vs_4bet' in bucket else min(amount, maximum)
     return amount
 
 # -- Multiprocessing / Worker Managers -------------------------------------------------------
 
 def run_chunk(args):
-    chunk_size, seed, master_nodes = args
+    chunk_size, seed, snapshot, start, samples, cache_size = args
     random.seed(seed)
 
-    base_nodes = master_nodes
+    from utils.card_bucketer import configure_caches
+    configure_caches(cache_size)
+    base_nodes = pickle.loads(snapshot)
     delta_nodes = {}
-    local_bucketer = Bucketer()
+    local_bucketer = Bucketer(samples)
 
     for count in range(chunk_size):
         state = create_state()
         play_hand(
             state,
-            traverser=count % 2,
+            traverser=(start + count) % 2,
             base_nodes=base_nodes,
             delta_nodes=delta_nodes,
             bucketer=local_bucketer,
         )
 
-    return delta_nodes
+    return delta_nodes, chunk_size
 
 def merge_nodes(master: dict, delta: dict):
     for key, delta_node in delta.items():
@@ -224,39 +157,10 @@ def merge_nodes(master: dict, delta: dict):
 
 # ── Training loop ──────────────────────────────────────────────────────────────
 
-def train(iters=100_000, n_workers=None, merge_every=1000):
-    if n_workers is None:
-        n_workers = os.cpu_count()
-
-    nodes = {}
-    total_chunks = iters // merge_every
-    print(f"Using {n_workers} workers, chunk size {merge_every} iterations each")
-
-    with Pool(n_workers) as pool:
-        with tqdm(total=total_chunks, desc="Chunks", unit="chunk") as pbar:
-            chunks_done = 0
-
-            while chunks_done < total_chunks:
-                batch = min(n_workers, total_chunks - chunks_done)
-                args = [
-                    (merge_every, random.randint(0, 2**32), nodes)
-                    for _ in range(batch)
-                ]
-
-                results = pool.map(run_chunk, args)
-
-                for delta_nodes in results:
-                    merge_nodes(nodes, delta_nodes)
-                    pbar.update(1)
-                    pbar.set_postfix(nodes=len(nodes))
-
-                chunks_done += batch
-
-                with open('nodesets/exact_preflop_50m.pkl', 'wb') as f:
-                    pickle.dump(nodes, f)
-
-    print(f"\nTraining complete ({iters:,} iterations)")
-    return nodes
+def train(iters=100_000, n_workers=1, merge_every=1000, **options):
+    return train_loop(create_state, play_hand, run_chunk, merge_nodes,
+                      trainer="full-game", iters=iters, n_workers=n_workers,
+                      merge_every=merge_every, **options)
 
 def play_hand(state, traverser, base_nodes, delta_nodes, bucketer):
     histories = list()
@@ -291,31 +195,4 @@ def create_state() -> State:
 
 
 if __name__ == '__main__':
-    now = datetime.now()
-    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-
-    os.makedirs('logs', exist_ok=True)
-    os.makedirs('debug_logs', exist_ok=True)
-    os.makedirs('nodesets', exist_ok=True)
-
-    logger = Logger(output_path=f"logs/{timestamp}.txt")
-    debug_logger = Logger(output_path=f"debug_logs/{timestamp}.txt")
-
-    # cProfile.run('train(100)', 'profile_output')
-
-    # stats = pstats.Stats('profile_output')
-    # stats.sort_stats('cumulative')
-    # stats.print_stats(20)  # top 20 slowest functions
-    nodes = train(10_000_000, merge_every=1000)
-
-    now = datetime.now()
-    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-    with open(f'nodesets/nodes_{timestamp}.pkl', 'wb') as f:
-        pickle.dump(nodes, f)
-
-    for key, value in nodes.items():
-        logger.log(key)
-        node_sum = sum(value.strategy_sum.values())
-        for k, v in value.strategy_sum.items():
-            logger.log(f"{k}: {v/node_sum}")
-        logger.log('--------------------------------')
+    training_main(train)

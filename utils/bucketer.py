@@ -2,8 +2,8 @@ from pokerkit import State
 from utils.card_bucketer import exact_preflop_card_bucket, preflop_card_bucket, flop_card_bucket, turn_card_bucket, river_card_bucket
 
 class Bucketer:
-    def __init__(self) -> None:
-        self.samples = 100
+    def __init__(self, samples=100) -> None:
+        self.samples = samples
 
     def preflop_bucket(self, state: State, history: list) -> tuple:
 

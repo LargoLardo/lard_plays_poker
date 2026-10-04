@@ -1,35 +1,66 @@
 import random
-from collections import Counter
+from collections import Counter, OrderedDict
 from pokerkit import Card, State, StandardHighHand, Rank
 from treys import Card as TreysCard, Evaluator
 
 # ── Equity (EHS) and Potential ──────────────────────────────────────────────────────────────
 
 _evaluator = Evaluator()
-_ehs_cache = {}
-_pot_cache = {}
+_ehs_cache = OrderedDict()
+_pot_cache = OrderedDict()
+_cache_limit = 10_000
+_DECK = tuple(TreysCard.new(r + suit) for r in "23456789TJQKA" for suit in "shdc")
+
+
+def configure_caches(max_entries=10_000):
+    global _cache_limit
+    if max_entries < 0:
+        raise ValueError("cache size must be nonnegative")
+    _cache_limit = max_entries
+    # Avoid retaining a previous training run's cached samples.
+    _ehs_cache.clear()
+    _pot_cache.clear()
+
+
+def _store(cache, key, value):
+    if _cache_limit:
+        cache[key] = value
+        cache.move_to_end(key)
+        if len(cache) > _cache_limit:
+            cache.popitem(last=False)
+
+
+def _equity_inputs(state, n_samples):
+    if n_samples < 1:
+        raise ValueError("sample count must be positive")
+    hero = tuple(sorted(_to_treys(repr(c)) for c in state.hole_cards[state.actor_index] if c is not None))
+    board = tuple(sorted(_to_treys(repr(c[0])) for c in state.board_cards))
+    # Unknown opponent cards and burns remain possible: do not leak the deal.
+    known = set(hero + board)
+    deck = tuple(c for c in _DECK if c not in known)
+    return hero, board, deck
+
 
 def _to_treys(card_str: str):
     """Convert pokerkit repr like 'Ah' to treys int. e.g. 'Ah' -> treys card int"""
     return TreysCard.new(card_str[0] + card_str[1].lower())
 
 def compute_ehs(state: State, n_samples: int = 100) -> float:
-    hero_cards  = tuple(_to_treys(repr(c)) for c in state.hole_cards[state.actor_index] if c is not None)
-    board_cards = tuple(_to_treys(repr(card[0])) for card in state.board_cards)
+    hero_cards, board_cards, deck = _equity_inputs(state, n_samples)
 
     # Cache in case of repeat board
-    key   = (hero_cards, board_cards)
+    key = (hero_cards, board_cards, n_samples)
     if key in _ehs_cache:
+        _ehs_cache.move_to_end(key)
         return _ehs_cache[key]
 
-    deck_strs   = [repr(c) for c in state.deck_cards]
     cards_to_deal = 5 - len(board_cards)
     wins = ties = 0
 
     for _ in range(n_samples):
-        sample     = random.sample(deck_strs, 2 + cards_to_deal)
-        vil_cards  = tuple(_to_treys(s) for s in sample[:2])
-        runout     = board_cards + tuple(_to_treys(s) for s in sample[2:])
+        sample     = random.sample(deck, 2 + cards_to_deal)
+        vil_cards  = tuple(sample[:2])
+        runout     = board_cards + tuple(sample[2:])
 
         hero_score = _evaluator.evaluate(runout, hero_cards)
         vil_score  = _evaluator.evaluate(runout, vil_cards)
@@ -41,20 +72,19 @@ def compute_ehs(state: State, n_samples: int = 100) -> float:
 
     result = (wins + 0.5 * ties) / n_samples
 
-    _ehs_cache[key] = result
+    _store(_ehs_cache, key, result)
     return result
 
 
 def compute_potential(state: State, n_samples: int = 100) -> tuple[float, float]:
-    hero_cards  = tuple(_to_treys(repr(c)) for c in state.hole_cards[state.actor_index] if c is not None)
-    board_cards = tuple(_to_treys(repr(card[0])) for card in state.board_cards)
+    hero_cards, board_cards, deck = _equity_inputs(state, n_samples)
 
     # Cache in case of repeat board
-    key   = (hero_cards, board_cards)
+    key = (hero_cards, board_cards, n_samples)
     if key in _pot_cache:
+        _pot_cache.move_to_end(key)
         return _pot_cache[key]
 
-    deck_strs   = [repr(c) for c in state.deck_cards]
     cards_to_deal = 5 - len(board_cards)
 
     ahead_now_behind_later = 0
@@ -62,12 +92,12 @@ def compute_potential(state: State, n_samples: int = 100) -> tuple[float, float]
     ahead_now_total  = 0
     behind_now_total = 0
 
+    hero_now = _evaluator.evaluate(board_cards, hero_cards)
     for _ in range(n_samples):
-        sample    = random.sample(deck_strs, 2 + cards_to_deal)
-        vil_cards = tuple(_to_treys(s) for s in sample[:2])
-        runout    = board_cards + tuple(_to_treys(s) for s in sample[2:])
+        sample    = random.sample(deck, 2 + cards_to_deal)
+        vil_cards = tuple(sample[:2])
+        runout    = board_cards + tuple(sample[2:])
 
-        hero_now = _evaluator.evaluate(board_cards, hero_cards)
         vil_now  = _evaluator.evaluate(board_cards, vil_cards)
 
         hero_final = _evaluator.evaluate(runout, hero_cards)
@@ -90,7 +120,7 @@ def compute_potential(state: State, n_samples: int = 100) -> tuple[float, float]
     npot = ahead_now_behind_later / ahead_now_total  if ahead_now_total  > 0 else 0.0
     result = ppot, npot
     
-    _pot_cache[key] = result
+    _store(_pot_cache, key, result)
     return result
 
 
