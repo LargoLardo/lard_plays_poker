@@ -86,6 +86,7 @@ public:
 struct Trainer {
     bool preflop;
     int samples;
+    int version = 3;
     uint64_t iterations = 0;
     std::mt19937_64 rng;
     Nodes nodes;
@@ -107,7 +108,9 @@ struct Trainer {
         }
         int& hand = hands[state.actor][state.street];
         if (hand < 0) hand = card_bucket(cards, state.actor, state.street, samples, rng);
-        uint32_t key = bucket(state, hand);
+        int amount = state.raise_size(preflop, rng);
+        int mask = legal_mask(state, amount);
+        uint32_t key = bucket(state, hand, mask);
         auto it = delta.find(key);
         if (it == delta.end()) {
             if (delta.size() >= delta_limit) throw BudgetExceeded("Traversal memory reserve reached");
@@ -115,8 +118,7 @@ struct Trainer {
         }
         Node& change = it->second;
         const Node* base = nodes.get(key);
-        int amount = state.raise_size(preflop, rng);
-        std::array<bool, 3> legal{state.bets[state.actor] < std::max(state.bets[0], state.bets[1]), true, state.can_raise(amount)};
+        std::array<bool, 3> legal{bool(mask & 1), true, bool(mask & 4)};
         std::array<double, 3> strategy{}, values{};
         double positive = 0;
         int count = 0;
@@ -155,6 +157,7 @@ struct Trainer {
         return traverse(next, traverser);
     }
     bool step() {
+        if (version != 3) throw std::runtime_error("Legacy checkpoint buckets merge legal actions; start a fresh run with a new --output");
         auto previous_rng = rng;
         delta.clear();
         for (auto& row : hands) row.fill(-1);
@@ -225,7 +228,7 @@ void save(const Trainer& trainer, const fs::path& path) {
     fs::path temporary = path.string() + ".tmp";
     std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
     if (!out) throw std::runtime_error("Cannot write " + temporary.string());
-    out.write("LARDCPP2", 8);
+    out.write("LARDCPP", 7); out.put(char('0' + trainer.version));
     write_uint(out, trainer.preflop, 4); write_uint(out, trainer.samples, 4);
     write_uint(out, trainer.iterations, 8); write_uint(out, trainer.nodes.size(), 8);
     std::ostringstream state; state << trainer.rng;
@@ -252,10 +255,9 @@ void save_snapshot(const Trainer& trainer, const fs::path& output) {
 void load(Trainer& trainer, const fs::path& path, bool mode_set, bool samples_set, bool reset_average = false) {
     std::ifstream in(path, std::ios::binary);
     char magic[8]; in.read(magic, 8);
-    bool legacy = in && std::string(magic, 8) == "LARDCPP1";
-    if (!in || (!legacy && std::string(magic, 8) != "LARDCPP2")) throw std::runtime_error("Invalid C++ checkpoint");
-    if (legacy && !reset_average)
-        throw std::runtime_error("Legacy checkpoint averages use a different algorithm; start fresh or pass --reset-average");
+    if (!in || std::string(magic, 7) != "LARDCPP" || magic[7] < '1' || magic[7] > '3')
+        throw std::runtime_error("Invalid C++ checkpoint");
+    trainer.version = magic[7] - '0';
     auto mode = read_uint(in, 4), samples = read_uint(in, 4);
     if (mode > 1 || samples < 1 || samples > 1'000'000) throw std::runtime_error("Invalid checkpoint settings");
     if ((mode_set && bool(mode) != trainer.preflop) || (samples_set && int(samples) != trainer.samples))
@@ -271,7 +273,7 @@ void load(Trainer& trainer, const fs::path& path, bool mode_set, bool samples_se
     for (uint64_t i = 0; i < count; ++i) {
         auto key = uint32_t(read_uint(in, 4));
         int street = (key >> 17) & 3, hand = key & 65535;
-        bool invalid = key >= (1U << 30) || ((key >> 19) & 7) > (street == 1 ? 3 : 4)
+        bool invalid = (trainer.version < 3 && key >= (1U << 30)) || ((key >> 19) & 7) > (street == 1 ? 3 : 4)
             || ((key >> 22) & 7) > (street == 0 ? 6 : 3) || ((key >> 27) & 3) > 2
             || hand >= (street == 0 ? 338 : street == 1 ? 768 : street == 2 ? 3072 : 64);
         if (invalid || trainer.nodes.get(key)) throw std::runtime_error("Invalid/duplicate checkpoint bucket");
@@ -302,7 +304,7 @@ void export_web(const Trainer& trainer, const fs::path& directory) {
             if (total <= 0) return;
             if (!first) out << ',';
             first = false;
-            out << quoted(bucket_json(key, !post)) << ":[";
+            out << quoted(bucket_json(key, !post, trainer.version == 3)) << ":[";
             for (int a = 0; a < 3; ++a) { if (a) out << ','; out << node.strategy[a] / total; }
             out << ',' << node.visits << ']';
         });
@@ -370,8 +372,11 @@ int main(int argc, char** argv) {
         Trainer trainer(preflop, samples, seed, size_t(memory_mb) * 1024 * 1024, size_t(max_nodes));
         if (reset_average && resume.empty()) throw std::runtime_error("--reset-average requires --resume");
         if (!resume.empty()) load(trainer, resume, mode_set, samples_set, reset_average);
+        if (trainer.version < 3 && iterations)
+            throw std::runtime_error("Legacy checkpoint buckets merge legal actions; start a fresh run with a new --output. Use --iterations 0 to inspect/export the old model.");
         if (iterations > std::numeric_limits<uint64_t>::max() - trainer.iterations)
             throw std::runtime_error("Iteration count would overflow the checkpoint counter");
+        bool output_set = !output.empty();
         if (output.empty()) output = resume.empty() ? fs::path(trainer.preflop ? "nodesets/cpp/preflop.bin" : "nodesets/cpp/full.bin") : resume;
         if (resume.empty() && fs::exists(output)) throw std::runtime_error("Output already exists; use --resume or a new --output");
         std::signal(SIGINT, on_signal); std::signal(SIGTERM, on_signal);
@@ -391,10 +396,10 @@ int main(int argc, char** argv) {
                 last_report = now;
             }
         }
-        save(trainer, output);
+        if (trainer.version == 3 || output_set) save(trainer, output);
         if (!export_dir.empty()) export_web(trainer, export_dir);
         double seconds = std::chrono::duration<double>(Clock::now() - start).count();
-        std::cout << "Saved " << trainer.iterations << " completed hands, " << trainer.nodes.size() << " nodes; "
+        std::cout << (trainer.version < 3 && !output_set ? "Loaded " : "Saved ") << trainer.iterations << " completed hands, " << trainer.nodes.size() << " nodes; "
                   << std::fixed << std::setprecision(1) << (trainer.iterations - before) / std::max(seconds, .000001)
                   << " hands/s; table " << trainer.nodes.capacity_bytes() / (1024.0 * 1024) << " MiB\n";
         return 0;

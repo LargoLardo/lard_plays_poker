@@ -1,4 +1,4 @@
-import { bestHand, blendSparseStrategy, buildPostflopBucket, compareScore, findPreflopStrategy, PostflopStrategy } from "./model-policy.js";
+import { bestHand, blendSparseStrategy, buildPostflopBucket, compareScore, findPreflopStrategy, modelActionMask, modelRaiseTo, PostflopStrategy } from "./model-policy.js";
 
 const RANKS = "23456789TJQKA";
 const SUITS = "cdhs";
@@ -162,7 +162,7 @@ function cancelNextHand() {
 }
 
 function toCall(player = game.actor) { return Math.max(...game.bets) - game.bets[player]; }
-function minRaiseTo() { return Math.min(game.bets[game.actor] + game.stacks[game.actor], Math.max(...game.bets) + game.lastRaise); }
+function minRaiseTo() { return Math.min(...game.bets.map((bet, player) => bet + game.stacks[player]), Math.max(...game.bets) + game.lastRaise); }
 function maxRaiseTo() { return game.bets[game.actor] + game.stacks[game.actor]; }
 function fmt(amount) { return `${Number(amount.toFixed(2))} BB`; }
 
@@ -182,7 +182,7 @@ function act(kind, raiseTo = null) {
     const target = Math.max(minRaiseTo(), Math.min(Number(raiseTo), maximum));
     const oldHigh = Math.max(...game.bets);
     pay(player, target - game.bets[player]);
-    game.lastRaise = Math.max(1, target - oldHigh);
+    game.lastRaise = Math.max(game.lastRaise, target - oldHigh);
     game.pending = new Set([1 - player]);
     game.histories[game.street].push("raise");
     game.lastAction = `${name(player)} raises to ${fmt(target)}`;
@@ -354,7 +354,7 @@ function preflopDecisionContext() {
   const stack = effective < 20 ? "short" : effective < 50 ? "medium" : "deep";
   const bucket = [hand, game.agent === 1 ? "SB" : "BB", stack, historyBucket(history), sizeBucket(history)];
   const key = bucket.join("|");
-  const match = findPreflopStrategy(model, bucket);
+  const match = findPreflopStrategy(model, bucket, modelActionMask(game));
   const fallback = heuristicPreflop(hand, history, toCall(game.agent) > 0);
   if (!match) return { weights:fallback, spot:key, source:"heuristic fallback (untrained node and no neighboring trained size)" };
   const blended = blendSparseStrategy(match.strategy, fallback, SPARSE_NODE_THRESHOLD);
@@ -391,7 +391,8 @@ function initializeRangeExplorer() {
   });
   rangeSpots = spots.map((spot) => {
     const [position, stack, history, size] = spot.split("|");
-    return { position, stack, history, size };
+    const mask = spot.split("|")[4];
+    return { position, stack, history, size, mask };
   });
   const filters = [ui.rangePosition, ui.rangeStack, ui.rangeHistory, ui.rangeSize];
   filters.forEach((filter, index) => filter.addEventListener("change", () => {
@@ -439,10 +440,15 @@ function renderRange() {
   const cells = [];
   const colors = ["#4d90c7", "#4dc78e", "#d75f61"];
   const modeIndex = ACTIONS.indexOf(rangeMode);
+  const availableMasks = [...new Set(rangeSpots.filter((s) => [s.position, s.stack, s.history, s.size].join("|") === spot).map((s) => s.mask).filter(Boolean))];
 
   for (const row of DISPLAY_RANKS) for (const column of DISPLAY_RANKS) {
     const hand = rangeHand(row, column);
-    const node = model[`${hand.key}|${spot}`];
+    const baseKey = `${hand.key}|${spot}`;
+    const rows = availableMasks.map((mask) => model[`${baseKey}|${mask}`]).filter(Boolean);
+    // Range display aggregates contexts; actual decisions always match one mask.
+    const visits = rows.reduce((sum, row) => sum + row[3], 0);
+    const node = model[baseKey] || (visits ? [0, 1, 2].map((a) => rows.reduce((sum, row) => sum + row[a] * row[3], 0) / visits).concat(visits) : null);
     if (!node) {
       cells.push(`<button class="range-cell missing" disabled><strong>${hand.label}</strong><small>—</small></button>`);
       continue;
@@ -485,7 +491,7 @@ function postflopDecisionContext() {
   else if (equity + .06 >= potOdds) heuristic = [.12, .76, .12];
   else heuristic = [.78, .21, .01];
 
-  const match = postflopStrategy.find(features.bucket);
+  const match = postflopStrategy.find(features.bucket, modelActionMask(game));
   const diagnostic = `${STREET_NAMES[game.street]}|bucket:${features.key}|equity:${(equity * 100).toFixed(1)}%|ppot:${(features.ppot * 100).toFixed(1)}%|npot:${(features.npot * 100).toFixed(1)}%`;
   if (!match) return { weights:heuristic, spot:diagnostic, source:"heuristic fallback (no trained node in this context)" };
 
@@ -538,16 +544,13 @@ function scheduleAgent() {
     if (game !== scheduledGame || game.finished || game.actor !== game.agent) return;
     const context = game.street === 0 ? preflopDecisionContext() : postflopDecisionContext();
     const weights = [...context.weights];
-    if (toCall(game.agent) === 0) weights[0] = 0;
-    if (game.stacks[game.agent] <= toCall(game.agent)) weights[2] = 0;
+    const mask = modelActionMask(game);
+    if (!(mask & 1)) weights[0] = 0;
+    if (!(mask & 4)) weights[2] = 0;
     const frequencies = normalizeWeights(weights);
     const choice = weightedChoice(frequencies);
     if (choice === 2) {
-      const high = Math.max(...game.bets);
-      const totalPot = game.pot + game.bets[0] + game.bets[1];
-      const target = game.street === 0
-        ? (historyBucket(game.histories[0]) === "vs_4bet" ? maxRaiseTo() : Math.max(high * 3, minRaiseTo()))
-        : Math.max(minRaiseTo(), Math.round(high + totalPot * .5));
+      const target = modelRaiseTo(game);
       logAgentDecision(context, frequencies, `Raise to ${fmt(Math.min(target, maxRaiseTo()))}`);
       act("raise", Math.min(target, maxRaiseTo()));
     } else {

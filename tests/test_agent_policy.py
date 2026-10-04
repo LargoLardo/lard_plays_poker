@@ -2,7 +2,7 @@ import unittest
 from collections import defaultdict
 from types import SimpleNamespace
 
-from utils.agent_policy import action_weights
+from utils.agent_policy import action_weights, bucket_with_actions, node_for_actions
 
 
 class FakeState:
@@ -40,6 +40,20 @@ class AgentPolicyTests(unittest.TestCase):
         bucket = ("27o", "SB", "deep", "vs_4bet", "~25.0bb raise")
         weights = action_weights(FakeState(), bucket, None)
         self.assertGreater(weights["fold"], 0.9)
+
+    def test_lookup_separates_action_masks_and_supports_legacy_nodes(self):
+        bucket = ('AKo', 'BB', 'short', 'vs_4bet', 'Jam (>25.00bb) raise')
+        call, raise_node = object(), object()
+        calling = ['fold', 'check/call']
+        raising = calling + ['raise']
+        nodes = {bucket_with_actions(bucket, calling): call,
+                 bucket_with_actions(bucket, raising): raise_node}
+        self.assertIs(node_for_actions(nodes, bucket, calling), call)
+        self.assertIs(node_for_actions(nodes, bucket, raising), raise_node)
+        del nodes[bucket_with_actions(bucket, calling)]
+        self.assertIsNone(node_for_actions(nodes, bucket, calling))
+        nodes[bucket] = call
+        self.assertIs(node_for_actions(nodes, bucket, calling), call)
 
 
 if __name__ == "__main__":

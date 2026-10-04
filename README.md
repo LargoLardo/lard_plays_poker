@@ -111,10 +111,11 @@ Checkpoints save atomically every 60 seconds and at completion, interruption, or
 the node limit. Set the interval with `--checkpoint-every`; use `--resume` to
 continue. New runs refuse to overwrite existing outputs. New checkpoints remain
 pickle node dictionaries usable by the agents and browser exporter; old pickles
-can also be read. New training averages strategies at sampled opponent nodes.
-Legacy checkpoints require `--reset-average` to discard old averages and visit
-counts while retaining regrets; use a different `--output` to preserve the old
-file. Prefer fresh training for model comparisons. Python resumes preserve
+can also be read. New training averages strategies at sampled opponent nodes
+and records schema 2: each bucket includes its exact legal-action mask.
+Legacy checkpoints remain usable for play/export, but training needs a fresh
+output: merged regrets cannot be separated with `--reset-average`.
+Python resumes preserve
 accumulated nodes and RNG state,
 but bounded equity caches are recomputed, so full-game resumes need not be
 bit-for-bit identical to uninterrupted runs. Only load trusted pickle files.

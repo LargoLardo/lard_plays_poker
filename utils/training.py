@@ -46,6 +46,7 @@ class NodeStore(dict):
     trainer = None
     samples = 100
     algorithm = 1
+    schema = 1
 
 
 class NodeUnpickler(pickle.Unpickler):
@@ -84,6 +85,8 @@ def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
     if max_nodes < 1 or cache_size < 0 or checkpoint_every < 0 or snapshot_every < 0:
         raise ValueError("max_nodes must be positive; cache/checkpoint/snapshot interval must be nonnegative")
     nodes = load_nodes(resume) if resume else NodeStore()
+    if resume and nodes.schema != 2:
+        raise ValueError("Legacy checkpoint buckets merge legal actions; start a fresh run with a new --output")
     if nodes.trainer and (nodes.trainer != trainer or nodes.samples != samples):
         raise ValueError("Resume with the same trainer and sample count")
     if resume and nodes.algorithm != 2 and not reset_average:
@@ -95,6 +98,7 @@ def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
             node.strategy_sum.clear()
             node.times_visited = 0
     nodes.algorithm = 2
+    nodes.schema = 2
     nodes.trainer, nodes.samples = trainer, samples
     random.seed(seed)
     if nodes.rng_state is not None:

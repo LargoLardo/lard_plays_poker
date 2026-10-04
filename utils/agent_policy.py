@@ -20,13 +20,25 @@ def can_meaningfully_fold(state) -> bool:
     return actor is not None and state.bets[actor] < max(state.bets) and state.can_fold()
 
 
-def legal_actions(state) -> list[str]:
+def legal_actions(state, raise_to=None) -> list[str]:
     actions = ["check/call"]
     if can_meaningfully_fold(state):
         actions.insert(0, "fold")
-    if state.can_complete_bet_or_raise_to():
+    if (state.can_complete_bet_or_raise_to() if raise_to is None
+            else state.can_complete_bet_or_raise_to(raise_to)):
         actions.append("raise")
     return actions
+
+def bucket_with_actions(bucket, actions):
+    """Schema 2: distinguish the exact available actions, including chosen sizing."""
+    mask = sum(1 << i for i, action in enumerate(('fold', 'check/call', 'raise')) if action in actions)
+    return (*bucket, mask)
+
+
+def node_for_actions(nodes, bucket, actions):
+    # Only legacy keys omit the action mask; never fall back to another mask.
+    node = nodes.get(bucket_with_actions(bucket, actions))
+    return node if node is not None else nodes.get(bucket)
 
 
 def _preflop_strength(hand: str) -> str:
@@ -46,8 +58,8 @@ def _preflop_strength(hand: str) -> str:
     return "trash"
 
 
-def heuristic_weights(state, bucket: tuple) -> dict[str, float]:
-    legal = legal_actions(state)
+def heuristic_weights(state, bucket: tuple, raise_to=None) -> dict[str, float]:
+    legal = legal_actions(state, raise_to)
     facing_bet = can_meaningfully_fold(state)
     street = state.street_index
     history = bucket[3] if street != 1 and len(bucket) > 3 else None
@@ -80,10 +92,10 @@ def heuristic_weights(state, bucket: tuple) -> dict[str, float]:
     return {action: weights.get(action, 0.0) for action in legal}
 
 
-def action_weights(state, bucket: tuple, node=None) -> dict[str, float]:
+def action_weights(state, bucket: tuple, node=None, raise_to=None) -> dict[str, float]:
     """Return normalized legal weights, blending sparse nodes with heuristics."""
-    legal = legal_actions(state)
-    fallback = heuristic_weights(state, bucket)
+    legal = legal_actions(state, raise_to)
+    fallback = heuristic_weights(state, bucket, raise_to)
     visits = getattr(node, "times_visited", 0) if node is not None else 0
     raw: Mapping[str, float] = getattr(node, "strategy_sum", {}) if node is not None else {}
     raw_total = sum(max(float(raw.get(action, 0.0)), 0.0) for action in legal)
@@ -103,6 +115,6 @@ def action_weights(state, bucket: tuple, node=None) -> dict[str, float]:
     return {action: weight / total for action, weight in weights.items()}
 
 
-def choose_action(state, bucket: tuple, node=None, rng=random) -> str:
-    weights = action_weights(state, bucket, node)
+def choose_action(state, bucket: tuple, node=None, rng=random, raise_to=None) -> str:
+    weights = action_weights(state, bucket, node, raise_to)
     return rng.choices(list(weights), weights=list(weights.values()), k=1)[0]

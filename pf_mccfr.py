@@ -3,6 +3,7 @@ import pickle
 from pokerkit import Automation, Mode, NoLimitTexasHoldem, State
 from utils.training import TrainingNode, train_loop, training_main
 from utils.bucketer import Bucketer
+from utils.agent_policy import legal_actions, bucket_with_actions
 
 
 
@@ -28,9 +29,9 @@ def mccfr(state: State, traverser: int, pf_history: list[str], base_nodes: dict,
 
     bucket = bucketer.exact_preflop_bucket(state, pf_history)
     cur_actor = state.actor_index
-    actions = ['check/call', 'raise']
-    if state.bets[cur_actor] < max(state.bets) and state.can_fold():
-        actions.insert(0, 'fold')
+    amount = get_rand_raise_size(state, bucket)
+    actions = legal_actions(state, amount)
+    bucket = bucket_with_actions(bucket, actions)
 
     base_node = base_nodes.get(bucket)
 
@@ -49,9 +50,6 @@ def mccfr(state: State, traverser: int, pf_history: list[str], base_nodes: dict,
             return {a: max(current_regret(a), 0.0) / pos for a in actions}
         return {a: 1.0 / len(actions) for a in actions}
 
-    amount = get_rand_raise_size(state, bucket)
-    if not state.can_complete_bet_or_raise_to(amount):
-        actions.remove('raise')
     # Freeze regret matching before exploring children of this information set.
     strat = get_current_strategy(actions)
 

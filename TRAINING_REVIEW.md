@@ -1,7 +1,7 @@
 # Python and C++ training review
 
 Reviewed October 4, 2026: `pf_mccfr.py`, `full_game_mccfr.py`, the standalone C++
-trainer in both modes, the bundled `FULLGAME_10m_iters.pkl`, and local C++ v1/v2
+trainer in both modes, the bundled `FULLGAME_10m_iters.pkl`, and local C++ v1/v2/v3
 checkpoints. Original models and the Python implementations are preserved.
 
 External-sampling MCCFR is a sound foundation for heads-up, zero-sum poker.
@@ -12,8 +12,8 @@ and the absence of Hold'em strength measurements. These models should not yet
 be described as validated GTO strategies.
 
 The MCCFR convergence results assume perfect recall and consistent actions
-within each information set. The current buckets do not satisfy those
-conditions in general. See the [original MCCFR paper](https://www.cs.cmu.edu/~waugh/publications/nips09b.pdf).
+within each information set. The legal-action inconsistency is now fixed. The buckets still lack perfect
+recall. See the [original MCCFR paper](https://www.cs.cmu.edu/~waugh/publications/nips09b.pdf).
 
 ## Correctness changes applied to both implementations
 
@@ -24,12 +24,24 @@ reach weighting; regrets update at traverser nodes. Both implementations and
 the Kuhn reference now follow that rule. [OpenSpiel's reference implementation](https://raw.githubusercontent.com/google-deepmind/open_spiel/master/open_spiel/python/algorithms/external_sampling_mccfr.py)
 documents and implements the same separation.
 
-New Python stores record algorithm version 2; native checkpoints use `LARDCPP2`.
-Legacy stores remain readable for play, export, and inspection. Resuming them
-requires explicit `--reset-average`, which discards average weights and visits
-but retains regrets. This is a warm start, not a repair or validation of legacy
-regrets. Use a different output to preserve an old checkpoint; fresh training is
-preferred for evaluating quality.
+New Python stores record algorithm version 2 and bucket schema 2; native
+checkpoints use `LARDCPP3`. Every training key includes the exact available
+fold/call/raise mask, after checking the prescribed or sampled raise amount.
+The C++ mask uses two spare key bits, preserving the 32-bit key and 64-byte
+hash-table entry. Exporters, Python agents, and browser lookup use the mask;
+approximate browser lookups never cross into another new action mask. Legacy
+models remain readable for play, export, and inspection. Training requires a
+fresh output: neither regrets nor averages can be separated reliably from old
+merged buckets, including with `--reset-average`.
+
+Exhaustively walking the 100bb full-game betting tree visits 2,314 decision
+states. With each actor/street card feature fixed, the old 174 context keys
+include 24 contexts with differing legal-action masks. Schema 2 produces 198
+contexts with zero such collisions. A Python regression also recreates the same
+river deal with two `SB/vs_4bet/small/short` situations: facing an all-in allows
+fold/call, while facing a raise allows fold/call/raise. They now learn in separate
+nodes. The action-aware upper bound is 269,466 nodes for this fixed full-game
+tree; arbitrary browser sizing and preflop-only sampling are different trees.
 
 Historical Python code also excluded hidden opponent/burn cards from equity
 sampling, used the wrong rank order for straight-draw flags, and capped a raise
@@ -129,33 +141,13 @@ all 169 opening classes are covered. Comparing those directly to the bundled
 
 ## Remaining limits shared by Python and C++
 
-1. **Some bucket keys merge incompatible legal actions.** Exhaustively walking
-   the current full-game betting tree from 100bb visits 2,314 decision states.
-   Holding each actor/street card feature fixed gives 174 context keys, of which
-   24 encounter different legal-action masks. For example, two reachable river
-   SB states have the same `vs_4bet`, `small`, `short`, prior-aggressor context:
-
-   | State, BB/SB values in bb | Stacks | Current bets | Total pot | Available actions |
-   |---|---|---|---:|---|
-   | Facing BB's all-in | 0 / 55 | 93 / 38 | 145 | Fold, call |
-   | Facing BB's raise | 55 / 75 | 38 / 18 | 70 | Fold, call, raise |
-
-   Both can occur with the same deal and therefore the same card feature. Their
-   common earlier actions are preflop call/call; flop BB check, SB bet 1, BB
-   call; turn BB check, SB bet 2, BB raise to 5, SB call. The first river line is
-   BB check, SB bet 7, BB raise to 18, SB raise to 38, BB shove to 93. The second
-   is BB bet 7, SB raise to 18, BB raise to 38. C++ and Python use matching
-   context rules. Filtering illegal actions at runtime keeps play legal, but
-   does not separate the accumulated learning. A fix needs a versioned key
-   change coordinated across trainers, exports, and inference.
-
-2. **The buckets forget information and action history.** Postflop keys discard
+1. **The buckets forget information and action history.** Postflop keys discard
    original hole ranks/suit blockers, prior street card buckets, preflop pot
    type, and most past betting history. Turn/river keep only a boolean indicating
    whether the actor raised on the previous street. This is imperfect recall;
    ordinary perfect-recall CFR guarantees cannot be assumed for these buckets.
 
-3. **There is only one raise action per state.** Full mode uses 3x the current
+2. **There is only one raise action per state.** Full mode uses 3x the current
    bet preflop and the current bet plus half the current total pot postflop,
    subject to rounding/capping and a late-raise shove rule. There are no separate
    small, large, overbet, or shove choices to learn between. Preflop-only mode
@@ -163,7 +155,7 @@ all 169 opening classes are covered. Comparing those directly to the bundled
    it cannot learn a sizing preference. Preflop-only payoffs assume check-through
    after preflop, so they do not represent optimal postflop continuation values.
 
-4. **Card abstraction is noisy and misses range/blocker information.** Equity
+3. **Card abstraction is noisy and misses range/blocker information.** Equity
    is measured against uniform unknown opponents, not a betting-conditioned
    range. Using this as a feature does not force the learned policy to assume a
    uniform opponent, but grouping hands by this feature loses strategic detail.
@@ -172,12 +164,12 @@ all 169 opening classes are covered. Comparing those directly to the bundled
    64 on the river, contributing to sparse coverage. Deterministic, suit-aware
    canonical features would also improve training/inference consistency.
 
-5. **Fresh hands always start at 100bb each.** Midhand stack/SPR buckets do not
+4. **Fresh hands always start at 100bb each.** Midhand stack/SPR buckets do not
    substitute for training games starting at 20bb, 40bb, or 200bb. The browser
    carries bankroll between hands and accepts arbitrary human sizing, relying on
    approximate lookups and heuristics outside the trained game.
 
-6. **Hold'em strength has not been measured.** Evaluator correctness, finite
+5. **Hold'em strength has not been measured.** Evaluator correctness, finite
    weights, coverage, and hands/second cannot establish exploitability. The
    added Kuhn check enumerates exact best responses: at 30,000 iterations its
    average-policy value is -0.05532734 (equilibrium -1/18), with exploitability
@@ -186,8 +178,7 @@ all 169 opening classes are covered. Comparing those directly to the bundled
 
 ## Recommended next work
 
-First separate legal-action contexts and retain a coherent public betting
-history, using a new schema for both training and play. Then balance turn
+Next retain a coherent public betting history and balance turn
 abstraction resolution against the available training budget and make card
 features deterministic. Add a small set of explicit raise sizes with stack-aware
 translation. Assess each change with fixed-deal, seat-swapped matches against
@@ -199,21 +190,20 @@ variants: those changes need evidence that they improve convergence per second.
 Start a separate corrected native run:
 
 ```bash
-./cpp/run.sh --iterations 1000000 --samples 100 --memory-mb 256 --output nodesets/cpp/full-v2.bin
+./cpp/run.sh --iterations 1000000 --samples 100 --memory-mb 256 --output nodesets/cpp/full-v3.bin
 ```
 
-Read-only audits support trusted Python pickles and native v1/v2 checkpoints:
+Read-only audits support trusted Python pickles and native v1/v2/v3 checkpoints:
 
 ```bash
 venv/bin/python tools/audit_model.py FULLGAME_10m_iters.pkl --swap-legacy-positions --output artifacts/audit-bundled.json
-venv/bin/python tools/audit_model.py nodesets/cpp/full-v2.bin --output artifacts/audit-native.json
+venv/bin/python tools/audit_model.py nodesets/cpp/full-v3.bin --output artifacts/audit-native.json
 ```
 
-Validation: all 18 Python/native differential tests pass, including 12,005
+Validation includes Python/native differential and browser policy tests, including 12,005
 Treys evaluator comparisons, 250 PokerKit betting sequences, averaging-phase
 checks, legacy resume guards, checkpoint/resume, memory rollback, and the joint
 sample/cache regression. Native unit checks also pass under AddressSanitizer
 and UndefinedBehaviorSanitizer. Benchmark logs and audit reports remain local
 under ignored `artifacts/`. Temporary test/benchmark nodesets were subsequently
-removed during cleanup; the current training checkpoint and bundled models were
-preserved.
+removed during cleanup; bundled models remain preserved.

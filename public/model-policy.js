@@ -15,7 +15,7 @@ function prioritizedLevels(levels, requested, higherLabel, lowerLabel) {
   ];
 }
 
-export function findPreflopStrategy(nodes, bucket) {
+export function findPreflopStrategy(nodes, bucket, mask = 7) {
   const sizes = prioritizedLevels(PREFLOP_SIZES, bucket[4], "higher", "lower");
   const stacks = prioritizedLevels(PREFLOP_STACKS, bucket[2], "deeper", "shallower");
   for (const size of sizes) {
@@ -23,7 +23,8 @@ export function findPreflopStrategy(nodes, bucket) {
       const candidate = [...bucket];
       candidate[2] = stack.value;
       candidate[4] = size.value;
-      const key = candidate.join("|");
+      const baseKey = candidate.join("|");
+      const key = nodes[`${baseKey}|${mask}`] ? `${baseKey}|${mask}` : baseKey;
       if (nodes[key]) return {
         strategy:nodes[key],
         key,
@@ -185,6 +186,30 @@ function historyBucket(history) {
   return "vs_4bet";
 }
 
+function roundEven(value) {
+  const floor = Math.floor(value);
+  return value - floor === .5 ? floor + floor % 2 : Math.round(value);
+}
+
+export function modelRaiseTo(game, player = game.agent) {
+  const high = Math.max(...game.bets);
+  const maximum = game.stacks[player] + game.bets[player];
+  const history = game.histories[game.street];
+  if (game.street !== 1 && historyBucket(history) === "vs_4bet") return maximum;
+  const totalPot = game.pot + game.bets[0] + game.bets[1];
+  return Math.min(maximum, roundEven(game.street === 0 ? high * 3 : high + totalPot * .5));
+}
+
+export function modelActionMask(game, player = game.agent) {
+  const high = Math.max(...game.bets);
+  const maximum = game.stacks[player] + game.bets[player];
+  const effective = Math.min(maximum, game.stacks[1 - player] + game.bets[1 - player]);
+  const minimum = Math.min(effective, high + game.lastRaise);
+  const amount = modelRaiseTo(game, player);
+  const canRaise = game.stacks[1 - player] > 0 && maximum > high && amount > high && amount >= minimum && amount <= maximum;
+  return 2 | (game.bets[player] < high ? 1 : 0) | (canRaise ? 4 : 0);
+}
+
 function sizeBucket(toCall, pot) {
   const ratio = toCall / pot;
   if (ratio < .4) return "small";
@@ -258,7 +283,7 @@ export class PostflopStrategy {
     }
   }
 
-  find(bucket) {
+  find(bucket, mask = 7) {
     const sizes = prioritizedLevels(POSTFLOP_SIZES, bucket[3], "higher", "lower");
     const stacks = prioritizedLevels(POSTFLOP_STACKS, bucket[4], "deeper", "shallower");
     for (const size of sizes) {
@@ -266,7 +291,9 @@ export class PostflopStrategy {
         const candidateBucket = [...bucket];
         candidateBucket[3] = size.value;
         candidateBucket[4] = stack.value;
-        const key = JSON.stringify(candidateBucket);
+        const baseKey = JSON.stringify(candidateBucket);
+        const maskedKey = JSON.stringify([...candidateBucket, mask]);
+        const key = this.nodes[maskedKey] ? maskedKey : baseKey;
         const resolution = {
           sizeFallback:size.fallback,
           requestedSize:bucket[3],
@@ -276,16 +303,17 @@ export class PostflopStrategy {
           resolvedStack:stack.value,
         };
         if (this.nodes[key]) return { strategy:this.nodes[key], key, exact:!size.fallback && !stack.fallback, distance:0, ...resolution };
-        const match = this.findNearestInContext(candidateBucket);
+        const match = this.findNearestInContext(candidateBucket, mask);
         if (match) return { ...match, ...resolution };
       }
     }
     return null;
   }
 
-  findNearestInContext(bucket) {
+  findNearestInContext(bucket, mask = 7) {
     const contextKey = `${postflopStreetFromBucket(bucket)}|${JSON.stringify(bucket.slice(1))}`;
-    const candidates = this.contexts.get(contextKey) || [];
+    const maskedContext = `${postflopStreetFromBucket(bucket)}|${JSON.stringify([...bucket.slice(1), mask])}`;
+    const candidates = this.contexts.get(maskedContext) || this.contexts.get(contextKey) || [];
     let nearest = null;
     for (const candidate of candidates) {
       const distance = handBucketDistance(bucket[0], candidate.bucket[0]);

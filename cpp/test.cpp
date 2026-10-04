@@ -38,7 +38,7 @@ void unit_tests() {
     Trainer average(false, 1, 1, budget, 0);
     average.cards = {0, 1, 2, 3, 4, 5, 6, 7, 8};
     for (auto& row : average.hands) row.fill(-1);
-    auto root = bucket(State{}, card_bucket(average.cards, 1, 0, 1, average.rng));
+    auto root = bucket(State{}, card_bucket(average.cards, 1, 0, 1, average.rng), 7);
     Node base; base.regret[0] = 100;
     average.nodes.add(root, base);
     assert(average.traverse(State{}, 0) == .5);
@@ -53,6 +53,26 @@ void unit_tests() {
     assert(table.prepare(5000));
     for (uint32_t i = 0; i < 1000; ++i) assert(table.get(i)->visits == i);
     assert(!table.prepare(1'000'000));
+
+    std::unordered_map<uint32_t, int> masks, old_masks;
+    auto walk = [&](auto&& self, State s) -> void {
+        if (s.terminal()) return;
+        int amount = s.raise_size(false, rng), mask = legal_mask(s, amount);
+        auto key = bucket(s, 0, mask);
+        auto found = masks.emplace(key, mask);
+        assert(found.second || found.first->second == mask);
+        assert(key_actions(key) == mask);
+        old_masks[bucket(s, 0)] |= 1 << mask;
+        for (int action = 0; action < 3; ++action) if (mask & (1 << action)) {
+            auto next = s; next.act(action, amount); self(self, next);
+        }
+    };
+    walk(walk, State{});
+    int collisions = 0;
+    for (const auto& entry : old_masks) collisions += (entry.second & (entry.second - 1)) != 0;
+    assert(collisions == 24 && masks.size() > old_masks.size());
+    std::cout << "Full betting tree: " << old_masks.size() << " old contexts, " << masks.size()
+              << " action-aware contexts; 24 old collisions, zero new collisions\n";
     std::cout << "C++ engine, rehash, checkpoint/resume and memory rollback checks passed\n";
 }
 
@@ -68,7 +88,8 @@ void snapshot(std::ostream& out, const State& state, const Cards& cards) {
     if (state.terminal()) out << "null";
     else {
         std::mt19937_64 rng(1);
-        out << bucket_json(bucket(state, card_bucket(cards, state.actor, state.street, 20, rng)));
+        int mask = legal_mask(state, state.raise_size(false, rng));
+        out << bucket_json(bucket(state, card_bucket(cards, state.actor, state.street, 20, rng), mask), false, true);
     }
     std::array<int, 7> a{}, b{};
     a[0] = cards[0]; a[1] = cards[1]; b[0] = cards[2]; b[1] = cards[3];

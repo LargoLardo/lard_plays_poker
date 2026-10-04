@@ -1,5 +1,8 @@
 import pickle
+import json
 import random
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import unittest
@@ -12,6 +15,7 @@ from pokerkit import Card
 from utils import card_bucketer as cards
 from utils.training import TrainingNode, NodeStore, load_nodes, save_nodes
 from tools.audit_model import audit
+from utils.agent_policy import legal_actions, bucket_with_actions
 
 
 class TrainingTests(unittest.TestCase):
@@ -41,6 +45,30 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(cards._max_straight_draw(list(Card.parse('3cAcAdKs'))), 2)
         self.assertTrue(cards.straight_draw_completed(list(Card.parse('As2d8c')), list(Card.parse('As2d8c3h'))))
         self.assertTrue(cards.straight_draw_completed(list(Card.parse('AsKd7c')), list(Card.parse('AsKd7cQh'))))
+
+    def test_river_collision_is_split_by_actual_legal_actions(self):
+        state = full.create_state()
+        # Common path reaches one fixed river deal; both continuations share cards.
+        for action, amount in [('c', 0), ('c', 0), ('c', 0), ('r', 1), ('c', 0),
+                               ('c', 0), ('r', 2), ('r', 5), ('c', 0)]:
+            state.check_or_call() if action == 'c' else state.complete_bet_or_raise_to(amount)
+        histories = [[], [], ['check/call', 'raise', 'raise', 'check/call']]
+        keys, base_keys = [], []
+        bucketer = full.Bucketer(10)
+        for line in ([('c', 0), ('r', 7), ('r', 18), ('r', 38), ('r', 93)],
+                     [('r', 7), ('r', 18), ('r', 38)]):
+            current = pickle.loads(pickle.dumps(state))
+            history = []
+            for action, amount in line:
+                current.check_or_call() if action == 'c' else current.complete_bet_or_raise_to(amount)
+                history.append('check/call' if action == 'c' else 'raise')
+            bucket = bucketer.river_bucket(current, history, histories[2])
+            actions = legal_actions(current, full.get_halfp_raise_size(current, bucket))
+            base_keys.append(bucket)
+            keys.append(bucket_with_actions(bucket, actions))
+        self.assertEqual(base_keys[0], base_keys[1])
+        self.assertEqual([key[-1] for key in keys], [3, 7])
+        self.assertNotEqual(keys[0], keys[1])
 
     def test_joint_equity_potential_uses_one_sample_pass(self):
         state = SimpleNamespace(actor_index=0,
@@ -97,6 +125,29 @@ class TrainingTests(unittest.TestCase):
             self.assertEqual(raw.iterations, 5)
             self.assertFalse(path.with_name(path.name + '.tmp').exists())
 
+    def test_web_export_preserves_action_masks_and_legacy_keys(self):
+        preflop = ('AKo', 'SB', 'deep', 'root', 'Limp')
+        river = ((5, False, False, False), 'SB', 'vs_4bet', 'small', 'short', False)
+        nodes = NodeStore()
+        for base in (preflop, river):
+            for mask in (None, 3, 7):
+                node = TrainingNode()
+                node.strategy_sum.update({'fold': 1, 'check/call': 2, 'raise': 0 if mask == 3 else 3})
+                node.times_visited = 10
+                nodes[base if mask is None else (*base, mask)] = node
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, pre, post = [root / name for name in ('nodes.pkl', 'pre.json', 'post.json')]
+            source.write_bytes(pickle.dumps(nodes))
+            result = subprocess.run([sys.executable, 'tools/export_web_model.py', str(source), str(pre),
+                                     '--postflop-output', str(post)], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(set(json.loads(pre.read_text())), {
+                '|'.join(preflop), '|'.join(preflop) + '|3', '|'.join(preflop) + '|7'})
+            exported = json.loads(post.read_text())
+            self.assertEqual({len(json.loads(key)) for key in exported}, {6, 7})
+            self.assertEqual({json.loads(key)[-1] for key in exported if len(json.loads(key)) == 7}, {3, 7})
+
     def test_iteration_snapshots_resume_and_preserve_existing_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -141,6 +192,7 @@ class TrainingTests(unittest.TestCase):
         node = pf.Node()
         state = pf.create_state()
         bucket = pf.Bucketer().exact_preflop_bucket(state, [])
+        bucket = bucket_with_actions(bucket, legal_actions(state, 2))
         base = {bucket: node}
         random.seed(1)
         pf.play_hand(state, 0, base, {}, pf.Bucketer())
@@ -150,6 +202,7 @@ class TrainingTests(unittest.TestCase):
         for trainer in (pf, full):
             state = trainer.create_state()
             bucket = trainer.Bucketer().exact_preflop_bucket(state, [])
+            bucket = bucket_with_actions(bucket, legal_actions(state, 3))
             base = trainer.Node()
             base.regret_sum['fold'] = 100
             delta = {}
@@ -164,6 +217,11 @@ class TrainingTests(unittest.TestCase):
             save_nodes(NodeStore({bucket: base}), legacy)
             with self.assertRaisesRegex(ValueError, 'Legacy checkpoint'):
                 full.train(0, resume=legacy)
+            with self.assertRaisesRegex(ValueError, 'buckets merge legal actions'):
+                full.train(0, resume=legacy, reset_average=True)
+            compatible = NodeStore({bucket: base})
+            compatible.schema, compatible.algorithm = 2, 2
+            save_nodes(compatible, legacy)
             reset = full.train(0, resume=legacy, reset_average=True)
             self.assertEqual(reset.algorithm, 2)
             self.assertFalse(reset[bucket].strategy_sum)

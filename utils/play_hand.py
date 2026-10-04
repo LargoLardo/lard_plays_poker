@@ -1,7 +1,8 @@
 from pokerkit import Automation, State, NoLimitTexasHoldem, Mode
 from utils.bucketer import Bucketer
 from utils.logger import Logger
-from utils.agent_policy import choose_action
+from utils.agent_policy import choose_action, legal_actions, node_for_actions
+from full_game_mccfr import get_pf_raise_size, get_halfp_raise_size
 import random
 
 # ----------- HELPER FUNCTIONS ---------------------
@@ -253,21 +254,12 @@ def agent_vs_random(agent: dict, agent_pos: int, logger: Logger) -> State:
             last_street = state.street_index
 
         if state.actor_index == agent_pos:
-            action_name = choose_action(state, bucket, agent.get(bucket))
+            amount = get_pf_raise_size(state, bucket) if state.street_index == 0 else get_halfp_raise_size(state, bucket)
+            actions = legal_actions(state, amount)
+            node = node_for_actions(agent, bucket, actions)
+            action_name = choose_action(state, bucket, node, raise_to=amount)
             if action_name == 'raise':
-                amount = max(state.bets) * 3
-                if 'vs_4bet' in bucket or amount > state.stacks[state.actor_index]:
-                    all_in_amt = state.stacks[state.actor_index]
-                    min_bet = state.min_completion_betting_or_raising_to_amount
-                    if min_bet is None:
-                        min_bet = 0
-                    amount = all_in_amt if all_in_amt >= min_bet else None
-                if state.can_complete_bet_or_raise_to(amount):
-                    state.complete_bet_or_raise_to(amount)
-                else:  
-                    action_name = 'check/call'
-                    amount = 0 
-                    state.check_or_call()
+                state.complete_bet_or_raise_to(amount)
             elif action_name == 'check/call':
                 state.check_or_call()
             elif action_name == 'fold':
@@ -360,21 +352,12 @@ def full_agent_vs_random(agent: dict, agent_pos: int, logger: Logger) -> State:
             last_street = state.street_index
 
         if state.actor_index == agent_pos:
-            action_name = choose_action(state, bucket, agent.get(bucket))
+            amount = get_pf_raise_size(state, bucket) if state.street_index == 0 else get_halfp_raise_size(state, bucket)
+            actions = legal_actions(state, amount)
+            node = node_for_actions(agent, bucket, actions)
+            action_name = choose_action(state, bucket, node, raise_to=amount)
             if action_name == 'raise':
-                amount = max(state.bets) * 3
-                if 'vs_4bet' in bucket or amount > state.stacks[state.actor_index]:
-                    all_in_amt = state.stacks[state.actor_index]
-                    min_bet = state.min_completion_betting_or_raising_to_amount
-                    if min_bet is None:
-                        min_bet = 0
-                    amount = all_in_amt if all_in_amt >= min_bet else None
-                if state.can_complete_bet_or_raise_to(amount):
-                    state.complete_bet_or_raise_to(amount)
-                else:  
-                    action_name = 'check/call'
-                    amount = 0 
-                    state.check_or_call()
+                state.complete_bet_or_raise_to(amount)
             elif action_name == 'check/call':
                 state.check_or_call()
             elif action_name == 'fold':
@@ -461,21 +444,12 @@ def agent_vs_agent(agent: dict, agent_2: dict, agent_pos: int, logger: Logger) -
             last_street = state.street_index
 
         if state.actor_index == agent_pos:
-            action_name = choose_action(state, bucket, agent.get(bucket))
+            amount = get_pf_raise_size(state, bucket) if state.street_index == 0 else get_halfp_raise_size(state, bucket)
+            actions = legal_actions(state, amount)
+            node = node_for_actions(agent, bucket, actions)
+            action_name = choose_action(state, bucket, node, raise_to=amount)
             if action_name == 'raise':
-                amount = max(state.bets) * 3
-                if 'vs_4bet' in bucket or amount > state.stacks[state.actor_index]:
-                    all_in_amt = state.stacks[state.actor_index]
-                    min_bet = state.min_completion_betting_or_raising_to_amount
-                    if min_bet is None:
-                        min_bet = 0
-                    amount = all_in_amt if all_in_amt >= min_bet else None
-                if state.can_complete_bet_or_raise_to(amount):
-                    state.complete_bet_or_raise_to(amount)
-                else:  
-                    action_name = 'check/call'
-                    amount = 0 
-                    state.check_or_call()
+                state.complete_bet_or_raise_to(amount)
             elif action_name == 'check/call':
                 state.check_or_call()
             elif action_name == 'fold':
@@ -483,21 +457,12 @@ def agent_vs_agent(agent: dict, agent_2: dict, agent_pos: int, logger: Logger) -
             else:
                 raise Exception
         else:
-            action_name = choose_action(state, bucket, agent_2.get(bucket))
+            amount = get_pf_raise_size(state, bucket) if state.street_index == 0 else get_halfp_raise_size(state, bucket)
+            actions = legal_actions(state, amount)
+            node = node_for_actions(agent_2, bucket, actions)
+            action_name = choose_action(state, bucket, node, raise_to=amount)
             if action_name == 'raise':
-                amount = max(state.bets) + state.total_pot_amount * 1/2 
-                if 'vs_4bet' in bucket or amount > state.stacks[state.actor_index]:
-                    all_in_amt = state.stacks[state.actor_index]
-                    min_bet = state.min_completion_betting_or_raising_to_amount
-                    if min_bet is None:
-                        min_bet = 0
-                    amount = all_in_amt if all_in_amt >= min_bet else None
-                if state.can_complete_bet_or_raise_to(amount):
-                    state.complete_bet_or_raise_to(amount)
-                else:  
-                    action_name = 'check/call'
-                    amount = 0 
-                    state.check_or_call()
+                state.complete_bet_or_raise_to(amount)
             elif action_name == 'check/call':
                 state.check_or_call()
             elif action_name == 'fold':
@@ -587,21 +552,12 @@ def full_agent_vs_player(agent: dict, agent_pos: int, logger: Logger) -> State:
             last_street = state.street_index
 
         if state.actor_index == agent_pos:
-            action_name = choose_action(state, bucket, agent.get(bucket))
+            amount = get_pf_raise_size(state, bucket) if state.street_index == 0 else get_halfp_raise_size(state, bucket)
+            actions = legal_actions(state, amount)
+            node = node_for_actions(agent, bucket, actions)
+            action_name = choose_action(state, bucket, node, raise_to=amount)
             if action_name == 'raise':
-                amount = max(state.bets) * 3
-                if 'vs_4bet' in bucket or amount > state.stacks[state.actor_index]:
-                    all_in_amt = state.stacks[state.actor_index]
-                    min_bet = state.min_completion_betting_or_raising_to_amount
-                    if min_bet is None:
-                        min_bet = 0
-                    amount = all_in_amt if all_in_amt >= min_bet else None
-                if state.can_complete_bet_or_raise_to(amount):
-                    state.complete_bet_or_raise_to(amount)
-                else:  
-                    action_name = 'check/call'
-                    amount = 0 
-                    state.check_or_call()
+                state.complete_bet_or_raise_to(amount)
             elif action_name == 'check/call':
                 state.check_or_call()
             elif action_name == 'fold':

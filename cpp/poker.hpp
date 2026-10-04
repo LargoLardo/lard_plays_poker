@@ -301,6 +301,20 @@ inline uint32_t bucket(const State& state, int hand) {
         | (uint32_t(stack) << 27) | (uint32_t(previous) << 29);
 }
 
+inline int legal_mask(const State& state, int amount) {
+    return 2 | (state.bets[state.actor] < std::max(state.bets[0], state.bets[1]) ? 1 : 0)
+        | (state.can_raise(amount) ? 4 : 0);
+}
+
+inline uint32_t bucket(const State& state, int hand, int mask) {
+    // Two spare key bits distinguish fold/raise availability; call is always legal.
+    return bucket(state, hand) | (uint32_t(mask & 1) << 30) | (uint32_t((mask >> 2) & 1) << 31);
+}
+
+inline int key_actions(uint32_t key) {
+    return 2 | int((key >> 30) & 1) | (int((key >> 31) & 1) << 2);
+}
+
 inline std::string hand_json(int hand, int street) {
     if (!street) {
         bool suited = hand % 2; hand /= 2;
@@ -327,7 +341,7 @@ inline std::string hand_json(int hand, int street) {
     return out + ']';
 }
 
-inline std::string bucket_json(uint32_t key, bool web_key = false) {
+inline std::string bucket_json(uint32_t key, bool web_key = false, bool with_actions = false) {
     int hand = key & 65535, actor = (key >> 16) & 1, street = (key >> 17) & 3;
     int history = (key >> 19) & 7, size = (key >> 22) & 7;
     int spr = (key >> 25) & 3, stack = (key >> 27) & 3, previous = (key >> 29) & 1;
@@ -335,13 +349,15 @@ inline std::string bucket_json(uint32_t key, bool web_key = false) {
     constexpr const char* stacks[] = {"short", "medium", "deep"};
     if (!street && web_key) {
         auto h = hand_json(hand, street);
-        return h.substr(1, h.size() - 2) + '|' + position + '|' + stacks[stack] + '|' + histories[history] + '|' + sizes[size];
+        return h.substr(1, h.size() - 2) + '|' + position + '|' + stacks[stack] + '|' + histories[history] + '|' + sizes[size]
+            + (with_actions ? "|" + std::to_string(key_actions(key)) : "");
     }
     std::string out = "[" + hand_json(hand, street) + ",\"" + position + "\",";
-    if (!street) return out + '"' + stacks[stack] + "\",\"" + histories[history] + "\",\"" + sizes[size] + "\"]";
+    if (!street) return out + '"' + stacks[stack] + "\",\"" + histories[history] + "\",\"" + sizes[size] + '"'
+        + (with_actions ? "," + std::to_string(key_actions(key)) : "") + ']';
     out += street == 1 ? std::to_string(history) : std::string("\"") + histories[history] + '"';
     out += std::string(",\"") + pot_sizes[size] + "\",\"" + sprs[spr] + '"';
     if (street > 1) out += previous ? ",true" : ",false";
-    return out + ']';
+    return out + (with_actions ? "," + std::to_string(key_actions(key)) : "") + ']';
 }
 } // namespace poker

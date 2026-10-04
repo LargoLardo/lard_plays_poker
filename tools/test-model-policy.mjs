@@ -5,6 +5,8 @@ import {
   blendSparseStrategy,
   buildPostflopBucket,
   findPreflopStrategy,
+  modelActionMask,
+  modelRaiseTo,
   PostflopStrategy,
   postflopStreetFromBucket,
 } from "../public/model-policy.js";
@@ -78,6 +80,35 @@ delete postflopStackNodes[JSON.stringify([sampleHandBucket, "BB", 0, "medium", "
 delete postflopStackNodes[JSON.stringify([sampleHandBucket, "BB", 0, "medium", "deep"])];
 const postflopShallowerStrategy = new PostflopStrategy(postflopStackNodes);
 assert.equal(postflopShallowerStrategy.find([sampleHandBucket, "BB", 0, "medium", "mid"]).stackFallback, "shallower");
+
+// Exact, nearest-hand, size, and stack fallback must preserve action availability.
+const preflopBucket = ["AKo", "BB", "deep", "vs_open", "~6.0bb raise"];
+const maskedPreflop = { [preflopBucket.join("|") + "|7"]:preflopHigher };
+assert.equal(findPreflopStrategy(maskedPreflop, preflopBucket, 3), null);
+maskedPreflop[preflopBucket.join("|") + "|3"] = preflopLower;
+assert.deepEqual(findPreflopStrategy(maskedPreflop, preflopBucket, 3).strategy, preflopLower);
+assert.deepEqual(findPreflopStrategy(maskedPreflop, preflopBucket, 7).strategy, preflopHigher);
+for (const size of ["small", "large"]) for (const stack of ["mid", "deep"]) {
+  const bucket = [sampleHandBucket, "BB", 0, size, stack];
+  const masked = new PostflopStrategy({ [JSON.stringify([...bucket, 7])]:preflopHigher });
+  assert.equal(masked.find([[5, 1, 0, "rainbow", false], "BB", 0, "medium", "mid_deep"], 3), null);
+}
+const sameBucket = [sampleHandBucket, "BB", 0, "medium", "deep"];
+const bothMasks = new PostflopStrategy({
+  [JSON.stringify([...sameBucket, 3])]:preflopLower,
+  [JSON.stringify([...sameBucket, 7])]:preflopHigher,
+});
+assert.deepEqual(bothMasks.find(sameBucket, 3).strategy, preflopLower);
+assert.deepEqual(bothMasks.find(sameBucket, 7).strategy, preflopHigher);
+assert.deepEqual(bothMasks.find([[5, ...sampleHandBucket.slice(1)], ...sameBucket.slice(1)], 3).strategy, preflopLower);
+
+const riverBase = { street:3, agent:1, histories:[[], [], [], ["raise", "raise", "raise"]], lastRaise:20 };
+assert.equal(modelActionMask({ ...riverBase, stacks:[0, 55], bets:[93, 38], pot:14 }), 3);
+assert.equal(modelActionMask({ ...riverBase, stacks:[55, 75], bets:[38, 18], pot:14 }), 7);
+const flopBase = { street:1, agent:1, histories:[[], [], [], []], stacks:[100, 100], bets:[0, 0], lastRaise:1 };
+assert.equal(modelRaiseTo({ ...flopBase, pot:5 }), 2, "half pot rounds 2.5 to even");
+assert.equal(modelRaiseTo({ ...flopBase, pot:7 }), 4, "half pot rounds 3.5 to even");
+assert.equal(modelActionMask({ ...flopBase, pot:5 }), 6, "free check cannot fold");
 
 const nodes = JSON.parse(await readFile("public/postflop-model.json", "utf8"));
 const strategy = new PostflopStrategy(nodes);

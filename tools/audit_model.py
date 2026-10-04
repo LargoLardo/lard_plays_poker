@@ -21,14 +21,15 @@ RANKS = '23456789TJQKA'
 def cpp_records(source):
     with open(source, 'rb') as stream:
         magic = stream.read(8)
-        if magic not in (b'LARDCPP1', b'LARDCPP2'):
+        if magic not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3'):
             raise ValueError('Unsupported C++ checkpoint')
         mode, samples, iterations, count, length = struct.unpack('<IIQQI', stream.read(28))
         if length > 20_000:
             raise ValueError('Invalid RNG metadata')
         stream.read(length)
         metadata = dict(format=magic.decode(), mode='preflop' if mode else 'full',
-                        samples=samples, iterations=iterations, algorithm=int(magic[-1:]))
+                        samples=samples, iterations=iterations, algorithm=1 if magic == b'LARDCPP1' else 2,
+                        schema=2 if magic == b'LARDCPP3' else 1)
         yield metadata
         # Records stream without constructing a second node store.
         for _ in range(count):
@@ -53,7 +54,7 @@ def python_records(source):
     # Class defaults keep legacy stores loadable, but are not recorded metadata.
     metadata = vars(nodes)
     yield dict(format='pickle', iterations=metadata.get('iterations'), algorithm=nodes.algorithm,
-               samples=metadata.get('samples'), mode=nodes.trainer or 'legacy/unknown')
+               samples=metadata.get('samples'), schema=nodes.schema, mode=nodes.trainer or 'legacy/unknown')
     for key, node in nodes.items():
         street = 'preflop' if isinstance(key[0], str) else {5: 'flop', 7: 'turn', 4: 'river'}[len(key[0])]
         yield street, key, [node.regret_sum.get(a, 0) for a in ACTIONS], \

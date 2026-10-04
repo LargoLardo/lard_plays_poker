@@ -31,17 +31,20 @@ state. It reproduces an uninterrupted run on the same compiler/standard-library
 build. An explicit conflicting mode or sample count is rejected. Starting a new
 run refuses to overwrite an existing checkpoint. C++ checkpoints are versioned
 binary files; Python pickle checkpoints stay separate and cannot be resumed by
-the C++ executable. Version 2 uses the standard two-player external-sampling
-average update at sampled opponent nodes. Version 1 checkpoints used a different
-average and are rejected by default. Start a fresh run, or explicitly retain
-legacy regrets while discarding its averages and visit counts:
+the C++ executable. Version 3 (`LARDCPP3`) distinguishes exact legal-action sets
+using two spare bits in the existing 32-bit key; node size is unchanged. It keeps
+version 2's standard average update at sampled opponent nodes. Versions 1/2
+remain readable for inspection/export, but cannot resume training, even with
+`--reset-average`: their merged regrets cannot be split reliably. Start a fresh
+run with a new output, or export an old checkpoint without rewriting it:
 
 ```bash
-./cpp/run.sh --resume nodesets/cpp/old.bin --reset-average --output nodesets/cpp/migrated.bin --iterations 1000000
+./cpp/run.sh --iterations 1000000 --output nodesets/cpp/full-v3.bin
+./cpp/run.sh --resume nodesets/cpp/old.bin --iterations 0 --export nodesets/cpp/old-web-model
 ```
 
-Migration is a warm start, not proof that legacy regrets are correct. Keep the
-original checkpoint and prefer a fresh run when assessing model quality.
+The browser and Python agents prefer the matching action mask, with fallback
+to legacy keys for old models. They never use a new node with a different mask.
 
 ## Memory and checkpointing
 
@@ -96,7 +99,7 @@ The main checkpoint still saves on its seconds-based interval, at the end of a
 run, on interruption, and at memory limits, including between snapshot milestones.
 There is no configured snapshot-count limit; available disk space and save time
 are the constraints. With the current 100bb full-game action tree, an upper
-bound of 236,442 keys gives roughly 14.2 MB per native snapshot, or about 1.4 GB
+bound of 269,466 action-aware keys gives roughly 16.2 MB per native snapshot, or about 1.6 GB
 for 100 snapshots. Actual files are usually smaller. Different training stages
 do not guarantee increasing playing strength; evaluate them before assigning
 difficulty levels.

@@ -12,6 +12,8 @@ import unittest
 from pokerkit import Automation, Mode, NoLimitTexasHoldem
 from treys import Card as TreysCard, Evaluator
 from utils.bucketer import Bucketer
+from utils.agent_policy import legal_actions, bucket_with_actions
+from full_game_mccfr import get_pf_raise_size, get_halfp_raise_size
 
 ROOT = Path(__file__).resolve().parents[1]
 CPP = ROOT / 'cpp'
@@ -23,7 +25,7 @@ def run(*arguments):
 
 def read_checkpoint(path):
     with open(path, 'rb') as stream:
-        if stream.read(8) not in (b'LARDCPP1', b'LARDCPP2'):
+        if stream.read(8) not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3'):
             raise ValueError('invalid magic')
         mode, samples, iterations, count, length = struct.unpack('<IIQQI', stream.read(28))
         rng = stream.read(length)
@@ -63,7 +65,7 @@ class CppTrainingTests(unittest.TestCase):
     def test_betting_and_buckets_match_pokerkit(self):
         rng = random.Random(72)
         deck = [r + s for r in '23456789TJQKA' for s in 'shdc']
-        cases, expected = [], []
+        cases, expected, browser_cases = [], [], []
         for case in range(250):
             deal = rng.sample(deck, 9)
             automations = tuple(a for a in Automation if a not in (
@@ -72,6 +74,7 @@ class CppTrainingTests(unittest.TestCase):
             state.deal_hole(''.join(deal[:2]), 0)
             state.deal_hole(''.join(deal[2:4]), 1)
             history = [[], [], [], []]
+            last_raise = 1
             actions, snapshots = [], []
             burns = iter(c for c in deck if c not in deal)
             bucketer = Bucketer(1)
@@ -99,6 +102,14 @@ class CppTrainingTests(unittest.TestCase):
                     bucket = bucketer.turn_bucket(state, history[2], history[1])
                 else:
                     bucket = bucketer.river_bucket(state, history[3], history[2])
+                amount = get_pf_raise_size(state, bucket) if street == 0 else get_halfp_raise_size(state, bucket)
+                bucket = bucket_with_actions(bucket, legal_actions(state, amount))
+                browser_cases.append({
+                    'game': {'street': street, 'agent': state.actor_index,
+                             'stacks': list(state.stacks), 'bets': list(state.bets),
+                             'pot': state.total_pot_amount - sum(state.bets),
+                             'histories': [list(h) for h in history], 'lastRaise': last_raise},
+                    'raiseTo': amount, 'mask': bucket[-1]})
                 minimum = state.min_completion_betting_or_raising_to_amount
                 return {'street': street, 'actor': state.actor_index,
                         'stacks': [int(x * 2) for x in state.stacks],
@@ -123,13 +134,17 @@ class CppTrainingTests(unittest.TestCase):
                 elif action == 1:
                     state.check_or_call()
                 else:
+                    old_high = max(state.bets)
                     low = int(state.min_completion_betting_or_raising_to_amount * 2)
                     high = int(state.max_completion_betting_or_raising_to_amount * 2)
                     amount = rng.choice([low, high, rng.randint(low, high)])
                     state.complete_bet_or_raise_to(amount / 2)
+                    last_raise = max(last_raise, amount / 2 - old_high)
                 history[street].append(['fold', 'check/call', 'raise'][action])
                 actions += [action, amount]
                 settle_deal()
+                if state.street_index != street:
+                    last_raise = 1
                 snapshots.append(snapshot())
             cases.append(' '.join(deal + list(map(str, actions))))
             expected.append(snapshots)
@@ -146,6 +161,18 @@ class CppTrainingTests(unittest.TestCase):
                         self.assertEqual(native[key][0][skip:], value[0][skip:], cases[index])
                     else:
                         self.assertEqual(native[key], value, (cases[index], key))
+
+        browser = subprocess.run(['node', '--input-type=module', '-e', '''
+import assert from 'node:assert/strict';
+import { modelActionMask, modelRaiseTo } from './public/model-policy.js';
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+for (const { game, raiseTo, mask } of JSON.parse(input)) {
+    assert.equal(modelRaiseTo(game), raiseTo, JSON.stringify(game));
+    assert.equal(modelActionMask(game), mask, JSON.stringify(game));
+}
+'''], cwd=ROOT, input=json.dumps(browser_cases), text=True, capture_output=True)
+        self.assertEqual(browser.returncode, 0, browser.stderr)
 
     def test_iteration_snapshots_resume_and_preserve_existing_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -207,14 +234,23 @@ class CppTrainingTests(unittest.TestCase):
                     if file.startswith('post'):
                         self.assertIsInstance(json.loads(key)[0], list)
                     else:
-                        self.assertEqual(len(key.split('|')), 5)
-            legacy = root / 'legacy.bin'
-            legacy.write_bytes(b'LARDCPP1' + a.read_bytes()[8:])
-            self.assertNotEqual(run('--resume', legacy, '--iterations', 0).returncode, 0)
-            reset = run('--resume', legacy, '--reset-average', '--iterations', 0, '--output', root / 'reset.bin')
-            self.assertEqual(reset.returncode, 0, reset.stderr)
-            reset_nodes = read_checkpoint(root / 'reset.bin')[4]
-            self.assertTrue(all(row[3:6] == [0, 0, 0] and row[6] == 0 for row in reset_nodes.values()))
+                        self.assertEqual(len(key.split('|')), 6)
+                        self.assertIn(int(key.split('|')[-1]), (2, 3, 6, 7))
+            data = a.read_bytes()
+            mode, samples, iterations, count, length = struct.unpack('<IIQQI', data[8:36])
+            key, row = next(iter(read_checkpoint(a)[4].items()))
+            for version in (1, 2):
+                legacy = root / f'legacy-{version}.bin'
+                legacy.write_bytes(f'LARDCPP{version}'.encode() +
+                    struct.pack('<IIQQI', mode, samples, iterations, 1, length) + data[36:36 + length] +
+                    struct.pack('<I6dQ', key & ((1 << 30) - 1), *row))
+                original = legacy.read_bytes()
+                rejected = run('--resume', legacy, '--iterations', 1, '--reset-average')
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn('buckets merge legal actions', rejected.stderr)
+                exported = run('--resume', legacy, '--iterations', 0, '--export', root / f'legacy-model-{version}')
+                self.assertEqual(exported.returncode, 0, exported.stderr)
+                self.assertEqual(legacy.read_bytes(), original)
             self.assertNotEqual(run('--iterations', 1, '--output', a).returncode, 0)
             self.assertNotEqual(run('--resume', a, '--samples', 11).returncode, 0)
             limited = run('--iterations', 100_000, '--samples', 10, '--memory-mb', 4, '--output', root / 'limit.bin')
