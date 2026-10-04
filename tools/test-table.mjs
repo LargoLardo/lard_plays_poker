@@ -46,6 +46,10 @@ async function screenshot(page, name) {
 try {
   // Load the real model first, to catch import and initialization regressions.
   const smoke = await pageFor();
+  const handAssets = new Set();
+  smoke.on("response", (response) => {
+    if (response.url().endsWith(".glb") && response.ok()) handAssets.add(response.url().split("/").at(-1));
+  });
   await smoke.goto(url);
   await smoke.waitForSelector(".scene-ready");
   await smoke.waitForFunction(() => document.querySelectorAll("#userCards .card").length === 2);
@@ -54,6 +58,8 @@ try {
   assert.ok((await smoke.locator("#userCards").boundingBox()).width <= 1, "The held cards replace the flat card overlay");
   assert.equal(await smoke.locator("#agentCards .back").count(), 2);
   assert.equal(await smoke.locator("#modelStatus.ready").count(), 1);
+  assert.deepEqual([...handAssets].sort(), ["left.glb", "right.glb"], "Both local hand meshes load");
+  assert.equal(await smoke.locator(".hand-meta #potLabel").count(), 1, "Pot stays in the controls");
   await smoke.waitForTimeout(700);
   await assertFits(smoke);
   await screenshot(smoke, "table-desktop");
@@ -73,6 +79,10 @@ try {
   assert.equal(await page.locator("#pot").textContent(), "1.5 BB");
   await page.locator("#callButton").click();
   assert.equal(await page.locator("#raiseSlider").isDisabled(), true, "Sizing must pause on the opponent's turn");
+  assert.equal(await page.locator("#tableScene").getAttribute("data-action"), "call");
+  await page.waitForSelector('#tableScene[data-animating="true"]');
+  await page.waitForTimeout(140);
+  await screenshot(page, "table-call-motion");
   await waitForMove(page);
   for (const [street, count] of [["Flop", 3], ["Turn", 4], ["River", 5]]) {
     assert.equal(await page.locator("#street").textContent(), street);
@@ -110,7 +120,7 @@ try {
   assert.equal(stacks.reduce((sum, text) => sum + parseFloat(text), 0), 200, "Showdown conserves chips");
   await page.locator("#cancelNextHandButton").click();
   assert.equal(await page.locator("#nextHandCountdown").textContent(), "Auto-deal cancelled.");
-  await page.waitForTimeout(700);
+  await page.waitForSelector('#tableScene[data-animating="false"]');
   await screenshot(page, "table-showdown");
 
   // A new hand replaces the scene and flips the dealer; raising moves chips.
@@ -123,6 +133,10 @@ try {
   const target = await page.locator("#raiseOutput").textContent();
   await page.locator("#raiseButton").click();
   assert.equal(await page.locator("#userBet strong").textContent(), target);
+  assert.equal(await page.locator("#tableScene").getAttribute("data-action"), "raise");
+  await page.waitForSelector('#tableScene[data-animating="true"]');
+  await page.waitForTimeout(140);
+  await screenshot(page, "table-raise-motion");
   await waitForMove(page);
 
   // Study still loads its full matrix and supports keyboard tab navigation.
@@ -143,7 +157,25 @@ try {
   await page.keyboard.press("f");
   await page.waitForSelector("#finishedActions:not(.hidden)");
   assert.equal(await page.locator("#lastAction").textContent(), "won by fold");
+  assert.equal(await page.locator("#tableScene").getAttribute("data-action"), "fold");
   await page.locator("#cancelNextHandButton").click();
+  // Interrupt the fold/payout; the next hand must clear every old motion.
+  await page.locator("#newHandButton").click();
+  await waitForMove(page);
+  await page.waitForSelector('#tableScene[data-animating="false"]');
+  assert.equal(await page.locator("#tableScene").getAttribute("data-board-count"), "0");
+  assert.equal(await page.locator("#tableScene").getAttribute("data-revealed"), "false");
+  await screenshot(page, "table-after-interrupted-fold");
+  // Full-stack transfers and the automatic runout must conserve the bankroll.
+  await page.locator('[data-size="allin"]').click();
+  await page.locator("#raiseButton").click();
+  await page.waitForSelector("#finishedActions:not(.hidden)");
+  await page.locator("#cancelNextHandButton").click();
+  await page.waitForSelector('#tableScene[data-animating="false"]');
+  const allInStacks = await page.locator("#userStack, #agentStack").allTextContents();
+  assert.equal(allInStacks.reduce((sum, text) => sum + parseFloat(text), 0), 200);
+  assert.equal(await page.locator("#tableScene").getAttribute("data-board-count"), "5");
+  await screenshot(page, "table-all-in");
   await page.close();
 
   // WebGL unavailable and context lost both leave a playable flat table.
@@ -168,6 +200,11 @@ try {
   const contextLoss = await pageFor({ reducedMotion: "reduce" });
   await contextLoss.goto(url);
   await contextLoss.waitForSelector(".scene-ready");
+  await waitForMove(contextLoss);
+  await contextLoss.locator("#foldButton").click();
+  await contextLoss.waitForSelector("#finishedActions:not(.hidden)");
+  await contextLoss.waitForSelector('#tableScene[data-animating="false"]');
+  await contextLoss.locator("#cancelNextHandButton").click();
   await contextLoss.locator("#tableCanvas").evaluate((canvas) => canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true })));
   await contextLoss.waitForSelector("#sceneNotice:not(.hidden)");
   assert.equal(await contextLoss.locator(".scene-ready").count(), 0);

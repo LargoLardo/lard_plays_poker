@@ -142,6 +142,15 @@ export async function createTableScene(canvas, host) {
   const pointer = new THREE.Vector2();
   let mobile = false, inView = true, frame = null, previousTime = 0, disposed = false;
   const moving = [];
+  const ease = (t) => t * t * (3 - 2 * t);
+  function animate(duration, sample, done = () => {}, delay = 0) {
+    if (reducedMotion.matches) { sample(1); done(); return; }
+    moving.push({ start: performance.now() + delay, duration, sample, done });
+  }
+  function settleAnimations() {
+    const pending = moving.splice(0);
+    for (const motion of pending) { motion.sample(1); motion.done(); }
+  }
   const geometries = new Set(), materials = new Set(), textures = new Set(), skeletons = new Set();
   const geometry = (value) => { geometries.add(value); return value; };
   const material = (value) => { materials.add(value); return value; };
@@ -257,8 +266,8 @@ export async function createTableScene(canvas, host) {
     scene.add(hand);
   });
   const bettingHand = makeHand("left", .3);
-  bettingHand.position.set(-1.7, .11, 2.3);
-  bettingHand.rotation.set(Math.PI / 2, Math.PI, Math.PI - .25);
+  bettingHand.position.set(-1.9, .11, 2.3);
+  bettingHand.rotation.set(Math.PI / 2, Math.PI, Math.PI - .7);
   scene.add(bettingHand);
   const gestureHands = [...opponentHands, bettingHand];
   gestureHands.forEach((hand) => { hand.userData.rest = hand.position.clone(); });
@@ -267,12 +276,14 @@ export async function createTableScene(canvas, host) {
   // through your held cards. The two cards have distinct, parallel depth planes.
   const pocket = new THREE.Group();
   foreground.add(pocket);
+  const pocketPose = new THREE.Group();
+  pocket.add(pocketPose);
   const heldCards = new THREE.Group();
-  pocket.add(heldCards);
+  pocketPose.add(heldCards);
   const grip = makeHand("right", .8);
   grip.position.set(.32, -.68, .27);
   grip.rotation.set(0, .10, -.30);
-  pocket.add(grip);
+  pocketPose.add(grip);
   foreground.add(new THREE.HemisphereLight("#e1e9e3", "#30372e", 1.6));
   const nearLight = new THREE.DirectionalLight("#ffefda", 2.3);
   nearLight.position.set(-1, 2, 3);
@@ -320,11 +331,21 @@ export async function createTableScene(canvas, host) {
   let cardSignature = "", renderedHand = null;
   function placeCard(slot, card, x, z, rotation = 0, delay = 0, held = false) {
     if (cardMeshes.has(slot)) {
-      cardMeshes.get(slot).material = getCardMaterial(card);
+      const object = cardMeshes.get(slot);
+      if (object.userData.card !== card) {
+        const before = object.material, after = getCardMaterial(card);
+        animate(460, (t) => {
+          object.rotation.z = Math.sin(t * Math.PI) * Math.PI / 2;
+          object.position.y = .042 + Math.sin(t * Math.PI) * .18;
+          object.material = t < .5 ? before : after;
+        });
+        object.userData.card = card;
+      }
       return;
     }
     const object = mesh(cardGeometry, getCardMaterial(card), held ? heldCards : cards, x, held ? .02 : .042, z);
     cardMeshes.set(slot, object);
+    object.userData.card = card;
     if (held) {
       object.rotation.order = "ZYX";
       object.rotation.set(Math.PI / 2, 0, rotation);
@@ -337,7 +358,11 @@ export async function createTableScene(canvas, host) {
     const target = object.position.clone();
     if (!reducedMotion.matches) {
       object.position.set(x - .1, held ? -.3 : .28, z - (held ? 0 : .25));
-      moving.push({ object, target, delay, start: performance.now() });
+      const from = object.position.clone();
+      animate(360, (t) => {
+        object.position.lerpVectors(from, target, ease(t));
+        object.position.y += Math.sin(t * Math.PI) * .045;
+      }, undefined, delay);
     }
   }
 
@@ -358,6 +383,9 @@ export async function createTableScene(canvas, host) {
   scene.add(chips);
   let chipSignature = "";
   function placeChips(amount, x, z, reserve = false) {
+    const pile = new THREE.Group();
+    pile.position.set(x, 0, z);
+    chips.add(pile);
     let halfUnits = Math.round(amount * 2);
     const counts = [0, 0, 0, 0];
     // Reserve stacks use smaller chips too; the displayed value stays exact.
@@ -375,11 +403,103 @@ export async function createTableScene(canvas, host) {
     counts.forEach((count, denomination) => {
       for (let i = 0; i < count; i++) {
         const stack = Math.floor(i / 12);
-        const object = mesh(chipGeometry, chipMaterials[denomination], chips,
-          x + (column + stack) * .245 + Math.sin(i * 8) * .004, .048 + (i % 12) * .034, z + (stack % 2) * .035);
+        const object = mesh(chipGeometry, chipMaterials[denomination], pile,
+          (column + stack) * .245 + Math.sin(i * 8) * .004, .048 + (i % 12) * .034, (stack % 2) * .035);
         object.rotation.y = i * .42;
       }
       if (count) column += Math.ceil(count / 12);
+    });
+    return pile;
+  }
+  const reservePoints = [new THREE.Vector3(-1.6, 0, 1.78), new THREE.Vector3(-1.95, 0, -1.83)];
+  const betPoints = [new THREE.Vector3(-.65, 0, 1.48), new THREE.Vector3(-.28, 0, -1.14)];
+  const potPoint = new THREE.Vector3(-1.73, 0, -.7);
+  function drawChips(state, previous = null) {
+    chips.clear();
+    const players = [state.user, state.agent];
+    const paid = players.map((player) => previous ? Math.max(0, state.committed[player] - previous.committed[player]) : 0);
+    const collect = previous && state.pot > previous.pot;
+    const payout = previous && state.finished && !previous.finished;
+    const active = previous && !reducedMotion.matches && (paid.some(Boolean) || collect || payout);
+    const awards = players.map((player) => payout ? state.winner === null ? state.pot / 2 : state.winner === player ? state.pot : 0 : 0);
+    players.forEach((player, i) => {
+      const point = reservePoints[i];
+      placeChips(state.stacks[player] - (active ? awards[i] : 0), point.x, point.z, true);
+    });
+    if (!active) {
+      players.forEach((player, i) => placeChips(state.bets[player], betPoints[i].x, betPoints[i].z));
+      if (!state.finished) placeChips(state.pot, potPoint.x, potPoint.z);
+      return;
+    }
+    const oldPot = placeChips(collect ? previous.pot : state.pot, potPoint.x, potPoint.z);
+    // A called all-in may return an unmatched excess. Only move the matched
+    // contributions into the pot; a fold keeps the unequal bets as posted.
+    const folded = state.histories.flat().at(-1) === "fold";
+    const incoming = players.map((player, i) => {
+      const amount = collect ? folded ? previous.bets[player] : (state.pot - previous.pot) / 2 : state.bets[player];
+      return placeChips(amount, betPoints[i].x, betPoints[i].z);
+    });
+    const finalPot = placeChips(state.pot, potPoint.x, potPoint.z);
+    finalPot.visible = false;
+    const winnings = awards.map((amount) => placeChips(amount, potPoint.x, potPoint.z));
+    winnings.forEach((pile) => { pile.visible = false; });
+    const pushEnd = paid.some(Boolean) ? 380 : 0;
+    const collectEnd = pushEnd + (collect ? 380 : 0);
+    const duration = collectEnd + (payout ? 680 : 0) || 380;
+    const settled = { ...state, stacks: [...state.stacks], bets: [...state.bets] };
+    animate(duration, (t) => {
+      const elapsed = t * duration;
+      incoming.forEach((pile, i) => {
+        pile.position.copy(betPoints[i]);
+        if (paid[i] && elapsed < pushEnd) {
+          const progress = ease(Math.min(1, elapsed / pushEnd));
+          pile.position.lerpVectors(reservePoints[i], betPoints[i], progress);
+          pile.position.y = Math.sin(progress * Math.PI) * .025;
+        } else if (collect) {
+          pile.position.lerpVectors(betPoints[i], potPoint, ease(Math.min(1, (elapsed - pushEnd) / 380)));
+        }
+        pile.visible = !collect || elapsed < collectEnd;
+      });
+      if (collect) oldPot.visible = elapsed < collectEnd;
+      finalPot.visible = collect && !payout && elapsed >= collectEnd;
+      if (payout) {
+        oldPot.visible = elapsed < collectEnd;
+        winnings.forEach((pile, i) => {
+          pile.visible = elapsed >= collectEnd && awards[i] > 0;
+          pile.position.lerpVectors(potPoint, reservePoints[i], ease(Math.max(0, Math.min(1, (elapsed - collectEnd - 120) / 560))));
+        });
+      }
+    }, () => drawChips(settled));
+  }
+
+  function gesture(action, player, user) {
+    const hand = player === user ? bettingHand : opponentHands[0];
+    const rest = hand.userData.rest;
+    if (action === "fold") {
+      if (player === user) {
+        animate(500, (t) => {
+          pocketPose.position.y = -1.35 * ease(t);
+          pocketPose.rotation.z = -.28 * ease(t);
+        });
+      } else {
+        for (let i = 0; i < 2; i++) {
+          const card = cardMeshes.get(`agent-${i}`), from = card.position.clone();
+          animate(520, (t) => {
+            card.position.lerpVectors(from, new THREE.Vector3(-.33 + i * .66, .045, -.55), ease(t));
+          }, () => { card.visible = false; });
+        }
+      }
+    }
+    const check = action === "check";
+    animate(check ? 480 : 760, (t) => {
+      const reach = Math.sin(Math.PI * t) ** 2;
+      hand.position.copy(rest);
+      if (check) hand.position.y += Math.sin(t * Math.PI * 2) ** 2 * .045;
+      else {
+        hand.position.x += reach * (player === user ? .85 : .45);
+        hand.position.z += reach * (player === user ? -.3 : .58);
+        hand.position.y += reach * .025;
+      }
     });
   }
 
@@ -393,7 +513,7 @@ export async function createTableScene(canvas, host) {
   const labelPoints = [
     [document.getElementById("agentSeat"), new THREE.Vector3(0, .66, -2.5)],
     [document.getElementById("agentBet"), new THREE.Vector3(.62, .05, -1.08)],
-    [document.getElementById("userBet"), new THREE.Vector3(-.72, .05, 1.5)],
+    [document.getElementById("userBet"), new THREE.Vector3(-.25, .05, 1.48)],
   ];
   const projected = new THREE.Vector3();
   function placeLabels() {
@@ -431,13 +551,12 @@ export async function createTableScene(canvas, host) {
     camera.lookAt(0, .05, mobile ? 1.1 : .55);
     for (let i = moving.length - 1; i >= 0; i--) {
       const entry = moving[i];
-      if (time - entry.start < entry.delay) continue;
-      entry.object.position.lerp(entry.target, reducedMotion.matches ? 1 : 1 - Math.exp(-delta * 12));
-      if (entry.object.position.distanceToSquared(entry.target) < .00001) {
-        entry.object.position.copy(entry.target);
-        moving.splice(i, 1);
-      }
+      if (time < entry.start && !reducedMotion.matches) continue;
+      const progress = reducedMotion.matches ? 1 : Math.min(1, (time - entry.start) / entry.duration);
+      entry.sample(progress);
+      if (progress === 1) { moving.splice(i, 1); entry.done(); }
     }
+    host.dataset.animating = String(moving.length > 0);
     renderer.clear();
     renderer.render(scene, camera);
     renderer.clearDepth();
@@ -492,37 +611,50 @@ export async function createTableScene(canvas, host) {
   resize();
   host.classList.add("scene-ready");
 
+  let previous = null;
   function update(state) {
     if (disposed) return;
     const { hole, board, stacks, bets, pot, user, agent, reveal, finished } = state;
+    const actions = state.histories.flat();
+    const newHand = renderedHand !== state;
+    const newAction = !newHand && previous && actions.length > previous.actionCount;
+    if (newHand || newAction) settleAnimations();
     // Hidden cards never reach the renderer, including its texture cache.
     const agentCards = reveal ? hole[agent] : [null, null];
     if (renderedHand !== state) {
       cards.clear();
       heldCards.clear();
       cardMeshes.clear();
-      moving.length = 0;
+      pocketPose.position.set(0, 0, 0);
+      pocketPose.rotation.set(0, 0, 0);
+      gestureHands.forEach((hand) => hand.position.copy(hand.userData.rest));
+      previous = null;
       cardSignature = "";
+      chipSignature = "";
+      host.dataset.action = "deal";
       renderedHand = state;
     }
     const signature = JSON.stringify([hole[user], agentCards, board]);
     if (signature !== cardSignature) {
       hole[user].forEach((card, i) => placeCard(`user-${i}`, card, -.20 + i * .40, i * .045, i ? -.10 : .10, i * 70, true));
-      agentCards.forEach((card, i) => placeCard(`agent-${i}`, card, -.29 + i * .49, -1.74, Math.PI + (i ? -.09 : .08)));
+      agentCards.forEach((card, i) => placeCard(`agent-${i}`, card, -.33 + i * .66, -1.74, Math.PI + (i ? -.035 : .035)));
       board.forEach((card, i) => placeCard(`board-${i}`, card, (i - 2) * .80, .58, 0, i * 50));
       cardSignature = signature;
     }
     const chipState = JSON.stringify([stacks, bets, pot, finished]);
     if (chipState !== chipSignature) {
-      chips.clear();
-      placeChips(stacks[user], 1.25, 1.6, true);
-      placeChips(stacks[agent], -1.95, -1.83, true);
-      placeChips(bets[user], -.28, .94);
-      placeChips(bets[agent], -.28, -1.14);
-      if (!finished) placeChips(pot, -1.73, -.7);
+      drawChips(state, previous);
       chipSignature = chipState;
     }
-    dealer.position.set(user === 1 ? -1 : .83, .06, user === 1 ? 1.75 : -1.77);
+    if (newAction) {
+      const kind = actions.at(-1);
+      const paid = state.committed[previous.actor] - previous.committed[previous.actor];
+      const action = kind === "check/call" ? paid > 0 ? "call" : "check" : kind;
+      host.dataset.action = action;
+      gesture(action, previous.actor, user);
+    }
+    previous = { actor: state.actor, actionCount: actions.length, committed: [...state.committed], bets: [...bets], pot, finished };
+    dealer.position.set(.83, .06, user === 1 ? 1.75 : -1.77);
     host.dataset.boardCount = board.length;
     host.dataset.revealed = String(reveal);
     host.dataset.view = "first-person";
