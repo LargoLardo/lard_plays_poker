@@ -40,14 +40,15 @@ inline int straight(uint32_t mask) {
 }
 
 struct HandCounts {
-    std::array<uint8_t, 15> ranks{};
     std::array<uint32_t, 4> suits{};
     std::array<uint8_t, 4> suit_counts{};
-    uint32_t mask = 0;
+    uint32_t mask = 0, pairs = 0, trips = 0, quads = 0;
     void add(int card) {
         int r = card / 4 + 2, s = card % 4;
-        ++ranks[r]; ++suit_counts[s];
-        mask |= 1U << r; suits[s] |= 1U << r;
+        uint32_t bit = 1U << r;
+        // Multiplicity masks contain ranks seen at least 2/3/4 times.
+        quads |= trips & bit; trips |= pairs & bit; pairs |= mask & bit;
+        mask |= bit; suits[s] |= bit; ++suit_counts[s];
     }
 };
 
@@ -57,9 +58,19 @@ inline uint32_t score(int category, const std::array<int, 5>& values) {
     return result;
 }
 
-// Evaluate 5-7 cards directly from rank counts and suit bitmasks. Higher wins.
+inline int highest_rank(uint32_t mask) { return mask ? 31 - __builtin_clz(mask) : 0; }
+
+inline std::array<int, 5> high_cards(uint32_t mask) {
+    std::array<int, 5> values{};
+    for (int i = 0; i < 5 && mask; ++i) {
+        values[i] = highest_rank(mask);
+        mask &= ~(1U << values[i]);
+    }
+    return values;
+}
+
+// Evaluate 5-7 cards directly from rank/suit bitmasks. Higher wins.
 inline uint32_t evaluate(const HandCounts& hand) {
-    const auto& counts = hand.ranks;
     const auto& suit_masks = hand.suits;
     const auto& suit_counts = hand.suit_counts;
     uint32_t mask = hand.mask;
@@ -69,37 +80,18 @@ inline uint32_t evaluate(const HandCounts& hand) {
         if (high) return score(8, {high, 0, 0, 0, 0});
         flush = s;
     }
-    int quad = 0, trip = 0, second_trip = 0;
-    std::array<int, 3> pairs{};
-    int pair_count = 0;
-    for (int r = 14; r >= 2; --r) {
-        if (counts[r] == 4) quad = r;
-        if (counts[r] == 3) { if (!trip) trip = r; else second_trip = r; }
-        if (counts[r] == 2) pairs[pair_count++] = r;
-    }
-    auto kickers = [&](int skip1, int skip2) {
-        std::array<int, 5> result{};
-        int n = 0;
-        for (int r = 14; r >= 2 && n < 5; --r)
-            if (counts[r] && r != skip1 && r != skip2) result[n++] = r;
-        return result;
-    };
-    if (quad) return score(7, {quad, kickers(quad, 0)[0], 0, 0, 0});
-    if (trip && (pair_count || second_trip))
-        return score(6, {trip, std::max(pairs[0], second_trip), 0, 0, 0});
-    if (flush >= 0) {
-        std::array<int, 5> values{};
-        int n = 0;
-        for (int r = 14; r >= 2 && n < 5; --r)
-            if (suit_masks[flush] & (1U << r)) values[n++] = r;
-        return score(5, values);
-    }
+    int quad = highest_rank(hand.quads), trip = highest_rank(hand.trips);
+    if (quad) return score(7, {quad, highest_rank(mask & ~(1U << quad)), 0, 0, 0});
+    int full_pair = highest_rank(hand.pairs & ~(1U << trip));
+    if (trip && full_pair) return score(6, {trip, full_pair, 0, 0, 0});
+    if (flush >= 0) return score(5, high_cards(suit_masks[flush]));
     int high = straight(mask);
     if (high) return score(4, {high, 0, 0, 0, 0});
-    if (trip) { auto k = kickers(trip, 0); return score(3, {trip, k[0], k[1], 0, 0}); }
-    if (pair_count >= 2) return score(2, {pairs[0], pairs[1], kickers(pairs[0], pairs[1])[0], 0, 0});
-    if (pair_count) { auto k = kickers(pairs[0], 0); return score(1, {pairs[0], k[0], k[1], k[2], 0}); }
-    return score(0, kickers(0, 0));
+    if (trip) { auto k = high_cards(mask & ~(1U << trip)); return score(3, {trip, k[0], k[1], 0, 0}); }
+    int pair = highest_rank(hand.pairs), second_pair = highest_rank(hand.pairs & ~(1U << pair));
+    if (second_pair) return score(2, {pair, second_pair, highest_rank(mask & ~((1U << pair) | (1U << second_pair))), 0, 0});
+    if (pair) { auto k = high_cards(mask & ~(1U << pair)); return score(1, {pair, k[0], k[1], k[2], 0}); }
+    return score(0, high_cards(mask));
 }
 
 inline uint32_t evaluate(const int* cards, int count) {
