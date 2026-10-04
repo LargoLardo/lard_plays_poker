@@ -49,6 +49,9 @@ try {
   await smoke.goto(url);
   await smoke.waitForSelector(".scene-ready");
   await smoke.waitForFunction(() => document.querySelectorAll("#userCards .card").length === 2);
+  assert.equal(await smoke.locator("#tableScene").getAttribute("data-view"), "first-person");
+  assert.equal(await smoke.locator("#gameplayPanel h1, #gameplayPanel h2").count(), 0);
+  assert.ok((await smoke.locator("#userCards").boundingBox()).width <= 1, "The held cards replace the flat card overlay");
   assert.equal(await smoke.locator("#agentCards .back").count(), 2);
   assert.equal(await smoke.locator("#modelStatus.ready").count(), 1);
   await smoke.waitForTimeout(700);
@@ -86,7 +89,15 @@ try {
       await page.setViewportSize({ width: 320, height: 568 });
       await page.waitForTimeout(300);
       await assertFits(page);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight), "Phone actions fit without scrolling");
       await screenshot(page, "table-small-phone");
+      await page.setViewportSize({ width: 1440, height: 960 });
+    }
+    if (street === "River") {
+      await page.setViewportSize({ width: 320, height: 568 });
+      await page.waitForTimeout(700);
+      await assertFits(page);
+      await screenshot(page, "table-phone-river");
       await page.setViewportSize({ width: 1440, height: 960 });
     }
     await page.locator("#callButton").click();

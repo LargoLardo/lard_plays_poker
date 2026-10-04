@@ -132,7 +132,7 @@ main { margin: 0 auto; }
   .brand-mark { font-size: 23px; }
   .view-tabs { gap: 24px; }
   .view-tab { font-size: 11px; }
-  .table-shell { height: 100svh; min-height: 620px; }
+  .table-shell { height: 100svh; min-height: 560px; }
   .felt { inset: 75px 3% 240px; border-width: 12px; border-radius: 35%; }
   .opponent-seat { gap: 7px; padding: 8px 10px; }
   .player-copy { min-width: 66px; }
