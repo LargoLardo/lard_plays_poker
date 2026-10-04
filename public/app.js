@@ -39,8 +39,8 @@ sceneHost.addEventListener("scene-unavailable", () => {
   tableScene = null;
   $("sceneNotice").classList.remove("hidden");
 });
-import("./table-scene.bundle.js").then(({ createTableScene }) => {
-  tableScene = createTableScene($("tableCanvas"), sceneHost);
+import("./table-scene.bundle.js").then(async ({ createTableScene }) => {
+  tableScene = await createTableScene($("tableCanvas"), sceneHost);
   if (game) tableScene.update(game);
 }).catch((error) => {
   console.warn("The 3D table could not be started:", error);

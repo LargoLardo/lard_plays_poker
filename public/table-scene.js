@@ -1,4 +1,7 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 const SUITS = { c: "♣", d: "♦", h: "♥", s: "♠" };
 const RANKS = { T: "10", J: "J", Q: "Q", K: "K", A: "A" };
@@ -65,14 +68,14 @@ function cardTexture(card) {
     }
     const rank = RANKS[card[0]] || card[0], suit = SUITS[card[1]];
     ctx.fillStyle = card[1] === "h" || card[1] === "d" ? "#983b36" : "#202b25";
-    ctx.font = "bold 52px Georgia";
-    ctx.fillText(rank, 23, 65);
-    ctx.font = "46px Georgia";
-    ctx.fillText(suit, 24, 111);
+    ctx.font = "bold 72px Georgia";
+    ctx.fillText(rank, 20, 81);
+    ctx.font = "48px Georgia";
+    ctx.fillText(suit, 22, 131);
     ctx.save();
     ctx.translate(width, height); ctx.rotate(Math.PI);
-    ctx.font = "bold 52px Georgia"; ctx.fillText(rank, 23, 65);
-    ctx.font = "46px Georgia"; ctx.fillText(suit, 24, 111);
+    ctx.font = "bold 72px Georgia"; ctx.fillText(rank, 20, 81);
+    ctx.font = "48px Georgia"; ctx.fillText(suit, 22, 131);
     ctx.restore();
     ctx.textAlign = "center";
     ctx.font = "112px Georgia";
@@ -80,27 +83,48 @@ function cardTexture(card) {
   });
 }
 
-function chipTexture(value, color) {
-  return canvasTexture(128, 128, (ctx) => {
+function chipTexture(value, color, side = false) {
+  return canvasTexture(side ? 512 : 256, side ? 64 : 256, (ctx, w, h) => {
     ctx.fillStyle = color;
-    ctx.fillRect(0, 0, 128, 128);
-    ctx.translate(64, 64);
-    for (let i = 0; i < 8; i++) {
-      ctx.rotate(Math.PI / 4);
-      ctx.fillStyle = "#e3dcc5";
-      ctx.fillRect(-6, 47, 12, 16);
+    ctx.fillRect(0, 0, w, h);
+    const ink = value === 1 ? "#34453b" : "#f4e9cb";
+    if (side) {
+      for (let i = 0; i < 8; i++) {
+        ctx.fillStyle = "#eee5ce";
+        ctx.fillRect(i * 64 + 22, 0, 20, h);
+        ctx.fillStyle = color;
+        ctx.fillRect(i * 64 + 29, 0, 6, h);
+      }
+      ctx.fillStyle = "#0003";
+      ctx.fillRect(0, 0, w, 5); ctx.fillRect(0, h - 5, w, 5);
+      return;
     }
-    ctx.strokeStyle = "#b8b291";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(0, 0, 39, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillStyle = value === 1 ? "#374333" : "#ede3c7";
+    ctx.translate(128, 128);
+    ctx.save();
+    for (let i = 0; i < 8; i++) {
+      ctx.fillStyle = "#eee5ce";
+      ctx.fillRect(-19, 96, 38, 34);
+      ctx.fillStyle = color;
+      ctx.fillRect(-5, 100, 10, 30);
+      ctx.rotate(Math.PI / 4);
+    }
+    ctx.restore();
+    ctx.strokeStyle = ink;
+    for (const radius of [80, 86, 118]) {
+      ctx.lineWidth = radius === 86 ? 2 : 1;
+      ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.fillStyle = ink;
     ctx.textAlign = "center";
-    ctx.font = "bold 28px Georgia";
-    ctx.fillText(String(value), 0, 9);
+    ctx.font = "18px Georgia"; ctx.fillText("♠", 0, -42);
+    ctx.font = "bold 56px Georgia"; ctx.fillText(String(value), 0, 20);
+    ctx.font = "14px sans-serif"; ctx.fillText("B B", 0, 50);
   });
 }
 
-export function createTableScene(canvas, host) {
+export async function createTableScene(canvas, host) {
+  const loader = new GLTFLoader();
+  const handModels = await Promise.all(["left", "right"].map((side) => loader.loadAsync(`/assets/hands/${side}.glb`)));
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "low-power" });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
   renderer.shadowMap.enabled = true;
@@ -111,12 +135,14 @@ export function createTableScene(canvas, host) {
   scene.background = new THREE.Color("#090b0a");
   scene.fog = new THREE.FogExp2("#090b0a", .055);
   const camera = new THREE.PerspectiveCamera(56, 1, .1, 50);
-  scene.add(camera);
+  const foreground = new THREE.Scene();
+  const handCamera = new THREE.PerspectiveCamera(56, 1, .1, 10);
+  renderer.autoClear = false;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const pointer = new THREE.Vector2();
   let mobile = false, inView = true, frame = null, previousTime = 0, disposed = false;
   const moving = [];
-  const geometries = new Set(), materials = new Set(), textures = new Set();
+  const geometries = new Set(), materials = new Set(), textures = new Set(), skeletons = new Set();
   const geometry = (value) => { geometries.add(value); return value; };
   const material = (value) => { materials.add(value); return value; };
   const texture = (value) => { textures.add(value); return value; };
@@ -169,75 +195,88 @@ export function createTableScene(canvas, host) {
   const stitch = new THREE.LineLoop(geometry(new THREE.BufferGeometry().setFromPoints(points)), material(new THREE.LineBasicMaterial({ color: "#81956c", transparent: true, opacity: .25 })));
   scene.add(stitch);
 
-  // No light reaches the opponent's body: only the hands enter the pool of light.
-  const darkness = material(new THREE.MeshBasicMaterial({ color: "#090b0a", toneMapped: false, fog: false }));
-  const sphere = geometry(new THREE.SphereGeometry(1, 24, 16));
-  const torso = mesh(sphere, darkness, scene, 0, .7, -3.25);
-  torso.scale.set(.8, .9, .35);
-  const head = mesh(sphere, darkness, scene, 0, 1.77, -3.24);
-  head.scale.set(.3, .38, .3);
-  const skin = standard({ color: "#a37b5b", roughness: .87 });
-  const nails = standard({ color: "#b99476", roughness: .75 });
-  const sleeve = standard({ color: "#101411", roughness: 1 });
-  const capsule = geometry(new THREE.CapsuleGeometry(.045, .16, 4, 8));
-
-  function hand(side) {
-    const group = new THREE.Group();
-    group.position.set(side * .86, .12, -2.02);
-    group.rotation.y = side * -.24;
-    scene.add(group);
-    const cuff = mesh(sphere, sleeve, group, 0, .025, -.44);
-    cuff.scale.set(.19, .12, .36);
-    const wrist = mesh(sphere, skin, group, 0, .025, -.18);
-    wrist.scale.set(.13, .085, .19);
-    const palm = mesh(sphere, skin, group, 0, 0, .02);
-    palm.scale.set(.19, .072, .23);
-    for (let i = 0; i < 4; i++) {
-      const x = (i - 1.5) * .09;
-      const length = [ .2, .26, .24, .18 ][i];
-      const finger = mesh(capsule, skin, group, x, -.018, .23 + length * .28);
-      finger.rotation.x = Math.PI / 2 - .1;
-      finger.rotation.z = (i - 1.5) * .045;
-      finger.scale.set(.88, length / .25, .82);
-      const nail = mesh(sphere, nails, group, x, .016, .28 + length * .58);
-      nail.scale.set(.029, .008, .047);
+  const leatherMap = texture(canvasTexture(256, 256, (ctx, w, h) => {
+    ctx.fillStyle = "#777"; ctx.fillRect(0, 0, w, h);
+    for (let y = 0; y < h; y += 3) for (let x = 0; x < w; x += 3) {
+      ctx.fillStyle = (x * 7 + y * 13) % 5 ? "#888" : "#555";
+      ctx.fillRect(x, y, 1, 2);
     }
-    const thumb = mesh(capsule, skin, group, -side * .21, -.014, .06);
-    thumb.rotation.set(Math.PI / 2, side * .7, 0);
+  }));
+  leatherMap.wrapS = leatherMap.wrapT = THREE.RepeatWrapping;
+  leatherMap.repeat.set(6, 6);
+  const glove = standard({ color: "#25292b", roughness: .52, bumpMap: leatherMap, bumpScale: .004 });
+  const sleeve = standard({ color: "#0e1315", roughness: .95 });
+  const cuffGeometry = geometry(new THREE.CylinderGeometry(.095, .15, 1.5, 32));
+  const handBasis = new THREE.Matrix4().makeBasis(
+    new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, -1, 0), new THREE.Vector3(1, 0, 0),
+  );
+  function makeHand(side, curl = .15) {
+    const group = new THREE.Group();
+    const model = cloneSkeleton(handModels[side === "left" ? 0 : 1].scene);
+    const wrist = model.getObjectByName("wrist");
+    const origin = wrist.position.clone();
+    model.updateMatrixWorld(true);
+    // WebXR joints are flat. Reparent without changing their bind transforms so
+    // finger bends propagate naturally through the rig.
+    for (const finger of ["thumb", "index-finger", "middle-finger", "ring-finger", "pinky-finger"]) {
+      const names = finger === "thumb"
+        ? ["metacarpal", "phalanx-proximal", "phalanx-distal", "tip"]
+        : ["metacarpal", "phalanx-proximal", "phalanx-intermediate", "phalanx-distal", "tip"];
+      let parent = wrist;
+      names.forEach((part) => {
+        const bone = model.getObjectByName(`${finger}-${part}`);
+        parent.attach(bone);
+        parent = bone;
+      });
+      for (const part of names.slice(1, -1)) {
+        model.getObjectByName(`${finger}-${part}`).rotateX(finger === "thumb" ? -curl * .3 : -curl);
+      }
+    }
+    model.position.sub(origin);
+    model.traverse((node) => {
+      if (!node.isMesh) return;
+      geometries.add(node.geometry);
+      node.material = glove;
+      node.castShadow = true; node.receiveShadow = true;
+      node.frustumCulled = false;
+      if (node.skeleton) skeletons.add(node.skeleton);
+    });
+    const normalized = new THREE.Group();
+    normalized.setRotationFromMatrix(handBasis);
+    if (side === "left") normalized.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), Math.PI);
+    normalized.scale.setScalar(3.7);
+    normalized.add(model);
+    group.add(normalized);
+    mesh(cuffGeometry, sleeve, group, 0, -.70, 0);
     return group;
   }
-  hand(-1); hand(1);
+  const opponentHands = [makeHand("right"), makeHand("left")];
+  opponentHands.forEach((hand, i) => {
+    hand.position.set(i ? .95 : -.95, .10, -2.38);
+    hand.rotation.set(Math.PI / 2, Math.PI, i ? .18 : -.18);
+    scene.add(hand);
+  });
+  const bettingHand = makeHand("left", .3);
+  bettingHand.position.set(-1.7, .11, 2.3);
+  bettingHand.rotation.set(Math.PI / 2, Math.PI, Math.PI - .25);
+  scene.add(bettingHand);
+  const gestureHands = [...opponentHands, bettingHand];
+  gestureHands.forEach((hand) => { hand.userData.rest = hand.position.clone(); });
 
-  // The near hand and cards travel with your viewpoint, as a held hand does.
+  // A separate foreground pass prevents the table and chip stacks from cutting
+  // through your held cards. The two cards have distinct, parallel depth planes.
   const pocket = new THREE.Group();
-  camera.add(pocket);
+  foreground.add(pocket);
   const heldCards = new THREE.Group();
   pocket.add(heldCards);
-  const grip = new THREE.Group();
-  grip.position.set(.17, -.43, .025);
-  grip.rotation.z = -.22;
+  const grip = makeHand("right", .8);
+  grip.position.set(.32, -.68, .27);
+  grip.rotation.set(0, .10, -.30);
   pocket.add(grip);
-  const forearm = mesh(sphere, sleeve, grip, .09, -.37, -.015);
-  forearm.scale.set(.16, .45, .1);
-  const wrist = mesh(sphere, skin, grip, .025, -.13, 0);
-  wrist.scale.set(.13, .22, .09);
-  const palm = mesh(sphere, skin, grip, 0, .035, -.035);
-  palm.scale.set(.16, .23, .08);
-  for (let i = 0; i < 4; i++) {
-    const finger = mesh(capsule, skin, grip, -.105 + i * .075, .125, -.14);
-    finger.rotation.x = -.35;
-    finger.scale.set(.82, [ .65, .94, 1, .8 ][i], .86);
-    const tip = mesh(sphere, skin, grip, -.105 + i * .075, .245, -.12);
-    tip.scale.set(.035, .065, .055);
-  }
-  const thumb = mesh(capsule, skin, grip, -.08, .07, .10);
-  thumb.rotation.set(0, .1, -.95);
-  thumb.scale.set(1.3, 1.18, 1.2);
-  const thumbNail = mesh(sphere, nails, grip, -.145, .11, .142);
-  thumbNail.scale.set(.033, .051, .009);
-  const nearLight = new THREE.PointLight("#fff0d2", 4.7, 3, 2);
-  nearLight.position.set(-.45, .3, -.55);
-  camera.add(nearLight);
+  foreground.add(new THREE.HemisphereLight("#e1e9e3", "#30372e", 1.6));
+  const nearLight = new THREE.DirectionalLight("#ffefda", 2.3);
+  nearLight.position.set(-1, 2, 3);
+  foreground.add(nearLight);
 
   const cardShape = new THREE.Shape();
   const width = .57, height = .84, radius = .035;
@@ -257,11 +296,24 @@ export function createTableScene(canvas, host) {
   for (let i = 0; i < positions.count; i++) {
     uv.setXY(i, (positions.getX(i) + width / 2) / width, (-positions.getZ(i) + height / 2) / height);
   }
+  const normals = cardGeometry.getAttribute("normal");
+  cardGeometry.clearGroups();
+  let runStart = 0, runMaterial = -1;
+  for (let i = 0; i < normals.count; i += 3) {
+    const side = normals.getY(i) > .9 ? 0 : normals.getY(i) < -.9 ? 1 : 2;
+    if (side !== runMaterial) {
+      if (i) cardGeometry.addGroup(runStart, i - runStart, runMaterial);
+      runStart = i; runMaterial = side;
+    }
+  }
+  cardGeometry.addGroup(runStart, normals.count - runStart, runMaterial);
+  const paperEdge = standard({ color: "#ddd8c9", roughness: .8 });
   const cardMaterials = new Map();
   function getCardMaterial(card) {
     if (!cardMaterials.has(card)) cardMaterials.set(card, standard({ map: texture(cardTexture(card)), roughness: .73 }));
-    return cardMaterials.get(card);
+    return [cardMaterials.get(card), cardMaterials.get(null), paperEdge];
   }
+  getCardMaterial(null);
   const cards = new THREE.Group();
   scene.add(cards);
   const cardMeshes = new Map();
@@ -278,7 +330,10 @@ export function createTableScene(canvas, host) {
       object.rotation.set(Math.PI / 2, 0, rotation);
       object.castShadow = false;
       object.receiveShadow = false;
-    } else object.rotation.y = rotation;
+    } else {
+      object.rotation.y = rotation;
+      if (slot.startsWith("board")) object.scale.setScalar(1.24);
+    }
     const target = object.position.clone();
     if (!reducedMotion.matches) {
       object.position.set(x - .1, held ? -.3 : .28, z - (held ? 0 : .25));
@@ -286,10 +341,17 @@ export function createTableScene(canvas, host) {
     }
   }
 
-  const chipGeometry = geometry(new THREE.CylinderGeometry(.095, .095, .026, 24));
+  const chipRim = new THREE.LatheGeometry([
+    new THREE.Vector2(.102, -.016), new THREE.Vector2(.108, -.010),
+    new THREE.Vector2(.108, .010), new THREE.Vector2(.102, .016),
+  ], 48);
+  const chipFace = new THREE.CircleGeometry(.102, 48).rotateX(-Math.PI / 2).translate(0, .016, 0);
+  const chipBack = chipFace.clone().rotateX(Math.PI);
+  const chipGeometry = geometry(mergeGeometries([chipRim, chipFace, chipBack], true));
+  [chipRim, chipFace, chipBack].forEach((part) => part.dispose());
   const chipMaterials = CHIP_VALUES.map((value, i) => {
-    const side = standard({ color: CHIP_COLORS[i], roughness: .62 });
-    const top = standard({ map: texture(chipTexture(value, CHIP_COLORS[i])), roughness: .65 });
+    const side = standard({ map: texture(chipTexture(value, CHIP_COLORS[i], true)), roughness: .58 });
+    const top = standard({ map: texture(chipTexture(value, CHIP_COLORS[i])), roughness: .68 });
     return [side, top, top];
   });
   const chips = new THREE.Group();
@@ -312,12 +374,12 @@ export function createTableScene(canvas, host) {
     let column = 0;
     counts.forEach((count, denomination) => {
       for (let i = 0; i < count; i++) {
-        const stack = Math.floor(i / 15);
+        const stack = Math.floor(i / 12);
         const object = mesh(chipGeometry, chipMaterials[denomination], chips,
-          x + (column + stack) * .22, .045 + (i % 15) * .027, z + (stack % 2) * .035);
+          x + (column + stack) * .245 + Math.sin(i * 8) * .004, .048 + (i % 12) * .034, z + (stack % 2) * .035);
         object.rotation.y = i * .42;
       }
-      if (count) column += Math.ceil(count / 15);
+      if (count) column += Math.ceil(count / 12);
     });
   }
 
@@ -330,9 +392,8 @@ export function createTableScene(canvas, host) {
 
   const labelPoints = [
     [document.getElementById("agentSeat"), new THREE.Vector3(0, .66, -2.5)],
-    [document.getElementById("potLabel"), new THREE.Vector3(0, .08, -.96)],
     [document.getElementById("agentBet"), new THREE.Vector3(.62, .05, -1.08)],
-    [document.getElementById("userBet"), new THREE.Vector3(.56, .05, 1.02)],
+    [document.getElementById("userBet"), new THREE.Vector3(-.72, .05, 1.5)],
   ];
   const projected = new THREE.Vector3();
   function placeLabels() {
@@ -347,18 +408,18 @@ export function createTableScene(canvas, host) {
   }
 
   function cameraPosition() {
-    return new THREE.Vector3(pointer.x * .045, mobile ? 3.1 : 1.65, mobile ? 6.5 : 4.45);
+    const distance = 4.3 / camera.aspect;
+    return new THREE.Vector3(pointer.x * .045, mobile ? distance * .608 : 2.65, mobile ? 1.1 + distance * .797 : 4.65);
   }
   function positionPocket() {
     const width = host.clientWidth, height = host.clientHeight;
     const depth = 1.75;
     const unitsPerPixel = 2 * depth * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / height;
-    const cardHeight = Math.min(mobile ? 180 : 260, height * (mobile ? .21 : .27));
-    const controlsHeight = Math.max(document.querySelector(".control-panel").offsetHeight, mobile ? 180 : 136);
-    const centerY = height - controlsHeight - 36 - cardHeight * .5 - (mobile ? 20 : 40);
+    const cardHeight = Math.min(mobile ? 142 : 215, height * .25);
+    const centerY = height - cardHeight * .56 - (mobile ? 58 : 70);
     pocket.scale.setScalar(cardHeight * unitsPerPixel / .84);
-    pocket.position.set(width * (mobile ? .13 : .24) * unitsPerPixel, (height / 2 - centerY) * unitsPerPixel, -depth);
-    pocket.rotation.z = -.04;
+    pocket.position.set(width * (mobile ? .16 : .27) * unitsPerPixel, (height / 2 - centerY) * unitsPerPixel, -depth);
+    pocket.rotation.z = -.025;
   }
   function draw(time) {
     frame = null;
@@ -367,7 +428,7 @@ export function createTableScene(canvas, host) {
     previousTime = time;
     const desired = cameraPosition();
     camera.position.lerp(desired, reducedMotion.matches ? 1 : 1 - Math.exp(-delta * 8));
-    camera.lookAt(0, .05, mobile ? 2.4 : .4);
+    camera.lookAt(0, .05, mobile ? 1.1 : .55);
     for (let i = moving.length - 1; i >= 0; i--) {
       const entry = moving[i];
       if (time - entry.start < entry.delay) continue;
@@ -377,7 +438,10 @@ export function createTableScene(canvas, host) {
         moving.splice(i, 1);
       }
     }
+    renderer.clear();
     renderer.render(scene, camera);
+    renderer.clearDepth();
+    renderer.render(foreground, handCamera);
     placeLabels();
     if (moving.length || camera.position.distanceToSquared(desired) > .000001) requestDraw();
   }
@@ -391,9 +455,12 @@ export function createTableScene(canvas, host) {
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     // A wider portrait lens keeps all five community cards in the seated view.
-    camera.fov = mobile ? 64 : 56;
+    camera.fov = 58;
     camera.position.copy(cameraPosition());
     camera.updateProjectionMatrix();
+    handCamera.aspect = camera.aspect;
+    handCamera.fov = camera.fov;
+    handCamera.updateProjectionMatrix();
     positionPocket();
     requestDraw();
   }
@@ -440,15 +507,15 @@ export function createTableScene(canvas, host) {
     }
     const signature = JSON.stringify([hole[user], agentCards, board]);
     if (signature !== cardSignature) {
-      hole[user].forEach((card, i) => placeCard(`user-${i}`, card, -.16 + i * .31, i * .02, i ? -.13 : .15, i * 70, true));
+      hole[user].forEach((card, i) => placeCard(`user-${i}`, card, -.20 + i * .40, i * .045, i ? -.10 : .10, i * 70, true));
       agentCards.forEach((card, i) => placeCard(`agent-${i}`, card, -.29 + i * .49, -1.74, Math.PI + (i ? -.09 : .08)));
-      board.forEach((card, i) => placeCard(`board-${i}`, card, (i - 2) * .68, -.05, 0, i * 50));
+      board.forEach((card, i) => placeCard(`board-${i}`, card, (i - 2) * .80, .58, 0, i * 50));
       cardSignature = signature;
     }
     const chipState = JSON.stringify([stacks, bets, pot, finished]);
     if (chipState !== chipSignature) {
       chips.clear();
-      placeChips(stacks[user], 1.7, 1.7, true);
+      placeChips(stacks[user], 1.25, 1.6, true);
       placeChips(stacks[agent], -1.95, -1.83, true);
       placeChips(bets[user], -.28, .94);
       placeChips(bets[agent], -.28, -1.14);
@@ -473,7 +540,7 @@ export function createTableScene(canvas, host) {
     document.removeEventListener("visibilitychange", visibilityChanged);
     reducedMotion.removeEventListener("change", resetPointer);
     canvas.removeEventListener("webglcontextlost", contextLost);
-    for (const item of [...geometries, ...materials, ...textures]) item.dispose();
+    for (const item of [...geometries, ...materials, ...textures, ...skeletons]) item.dispose();
     renderer.dispose();
     host.classList.remove("scene-ready");
     for (const [element] of labelPoints) { element.style.left = ""; element.style.top = ""; }
