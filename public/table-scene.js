@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { DEAL_MS, REVEAL_MS, DECK, dealPose, revealPose } from "./card-motion.js";
 
 const SUITS = { c: "♣", d: "♦", h: "♥", s: "♠" };
 const RANKS = { T: "10", J: "J", Q: "Q", K: "K", A: "A" };
@@ -143,13 +144,17 @@ export async function createTableScene(canvas, host) {
   let mobile = false, inView = true, frame = null, previousTime = 0, disposed = false;
   const moving = [];
   const ease = (t) => t * t * (3 - 2 * t);
-  function animate(duration, sample, done = () => {}, delay = 0) {
+  function animate(duration, sample, done = () => {}, delay = 0, channel = "action") {
     if (reducedMotion.matches) { sample(1); done(); return; }
-    moving.push({ start: performance.now() + delay, duration, sample, done });
+    moving.push({ start: performance.now() + delay, duration, sample, done, channel });
   }
-  function settleAnimations() {
-    const pending = moving.splice(0);
-    for (const motion of pending) { motion.sample(1); motion.done(); }
+  function settleAnimations(includeCards) {
+    for (let i = moving.length - 1; i >= 0; i--) {
+      const motion = moving[i];
+      if (!includeCards && motion.channel === "cards") continue;
+      moving.splice(i, 1);
+      motion.sample(1); motion.done();
+    }
   }
   const geometries = new Set(), materials = new Set(), textures = new Set(), skeletons = new Set();
   const geometry = (value) => { geometries.add(value); return value; };
@@ -337,41 +342,56 @@ export async function createTableScene(canvas, host) {
   scene.add(cards);
   const cardMeshes = new Map();
   let cardSignature = "", renderedHand = null;
+  function applyCardPose(object, pose) {
+    object.position.set(pose.x, pose.y, pose.z);
+    object.rotation.set(0, pose.yaw, pose.roll);
+    object.scale.setScalar(pose.scale);
+  }
   function placeCard(slot, card, x, z, rotation = 0, delay = 0, held = false) {
+    const now = performance.now();
     if (cardMeshes.has(slot)) {
       const object = cardMeshes.get(slot);
       if (object.userData.card !== card) {
-        const before = object.material, after = getCardMaterial(card);
-        animate(460, (t) => {
-          object.rotation.z = Math.sin(t * Math.PI) * Math.PI / 2;
-          object.position.y = .042 + Math.sin(object.rotation.z) * .30;
-          object.material = t < .5 ? before : after;
-        });
+        // The face is on the underside until the physical half-turn reveals it.
+        // Wait for an in-flight deal instead of snapping that card to its seat.
+        object.material = getCardMaterial(card);
+        const wait = Math.max(delay, object.userData.readyAt - now);
+        animate(REVEAL_MS, (t) => applyCardPose(object, revealPose(t, object.userData.target)), undefined, wait, "cards");
+        object.userData.readyAt = reducedMotion.matches ? now : now + wait + REVEAL_MS;
         object.userData.card = card;
       }
-      return;
+      return object.userData.readyAt;
     }
     const object = mesh(cardGeometry, getCardMaterial(card), held ? heldCards : cards, x, held ? .02 : .042, z);
     cardMeshes.set(slot, object);
     object.userData.card = card;
+    object.userData.readyAt = now;
     if (held) {
       object.rotation.order = "ZYX";
       object.rotation.set(Math.PI / 2, 0, rotation);
       object.castShadow = false;
       object.receiveShadow = false;
     } else {
-      object.rotation.y = rotation;
-      if (slot.startsWith("board")) object.scale.setScalar(1.24);
+      const target = { x, z, yaw: rotation, board: slot.startsWith("board") };
+      object.userData.target = target;
+      if (card && !target.board) {
+        applyCardPose(object, revealPose(1, target));
+      } else {
+        applyCardPose(object, dealPose(0, target));
+        object.visible = reducedMotion.matches;
+        animate(DEAL_MS, (t) => {
+          object.visible = true;
+          applyCardPose(object, dealPose(t, target));
+        }, undefined, delay, "cards");
+        object.userData.readyAt = reducedMotion.matches ? now : now + delay + DEAL_MS;
+      }
     }
-    const target = object.position.clone();
-    if (!held && !reducedMotion.matches) {
-      object.position.set(x - .1, .28, z - .25);
-      const from = object.position.clone();
-      animate(360, (t) => {
-        object.position.lerpVectors(from, target, ease(t));
-        object.position.y += Math.sin(t * Math.PI) * .045;
-      }, undefined, delay);
-    }
+    return object.userData.readyAt;
+  }
+  // A shared, visible origin makes each deal read as a card leaving the pack.
+  for (let i = 0; i < 7; i++) {
+    const card = mesh(cardGeometry, getCardMaterial(null), scene, DECK.x, .042 + i * .009, DECK.z);
+    card.rotation.y = .16;
   }
 
   const chipRim = new THREE.LatheGeometry([
@@ -422,7 +442,7 @@ export async function createTableScene(canvas, host) {
   const reservePoints = [new THREE.Vector3(-1.6, 0, 1.78), new THREE.Vector3(-1.95, 0, -1.83)];
   const betPoints = [new THREE.Vector3(-.65, 0, 1.48), new THREE.Vector3(-.28, 0, -1.14)];
   const potPoint = new THREE.Vector3(-1.73, 0, -.7);
-  function drawChips(state, previous = null) {
+  function drawChips(state, previous = null, revealDelay = 0) {
     chips.clear();
     const players = [state.user, state.agent];
     const paid = players.map((player) => previous ? Math.max(0, state.committed[player] - previous.committed[player]) : 0);
@@ -453,7 +473,8 @@ export async function createTableScene(canvas, host) {
     winnings.forEach((pile) => { pile.visible = false; });
     const pushEnd = paid.some(Boolean) ? 380 : 0;
     const collectEnd = pushEnd + (collect ? 380 : 0);
-    const duration = collectEnd + (payout ? 680 : 0) || 380;
+    const payoutStart = Math.max(collectEnd, revealDelay);
+    const duration = (payout ? payoutStart + 680 : collectEnd) || 380;
     const settled = { ...state, stacks: [...state.stacks], bets: [...state.bets] };
     animate(duration, (t) => {
       const elapsed = t * duration;
@@ -469,12 +490,12 @@ export async function createTableScene(canvas, host) {
         pile.visible = !collect || elapsed < collectEnd;
       });
       if (collect) oldPot.visible = elapsed < collectEnd;
-      finalPot.visible = collect && !payout && elapsed >= collectEnd;
+      finalPot.visible = (collect || payout) && elapsed >= collectEnd && (!payout || elapsed < payoutStart);
       if (payout) {
         oldPot.visible = elapsed < collectEnd;
         winnings.forEach((pile, i) => {
-          pile.visible = elapsed >= collectEnd && awards[i] > 0;
-          pile.position.lerpVectors(potPoint, reservePoints[i], ease(Math.max(0, Math.min(1, (elapsed - collectEnd - 120) / 560))));
+          pile.visible = elapsed >= payoutStart && awards[i] > 0;
+          pile.position.lerpVectors(potPoint, reservePoints[i], ease(Math.max(0, Math.min(1, (elapsed - payoutStart - 120) / 560))));
         });
       }
     }, () => drawChips(settled));
@@ -491,10 +512,13 @@ export async function createTableScene(canvas, host) {
         });
       } else {
         for (let i = 0; i < 2; i++) {
-          const card = cardMeshes.get(`agent-${i}`), from = card.position.clone();
+          const card = cardMeshes.get(`agent-${i}`);
+          const target = card.userData.target;
+          const from = new THREE.Vector3(target.x, .05, target.z);
+          const wait = Math.max(0, card.userData.readyAt - performance.now());
           animate(520, (t) => {
-            card.position.lerpVectors(from, new THREE.Vector3(-.33 + i * .66, .045, -.55), ease(t));
-          }, () => { card.visible = false; });
+            card.position.lerpVectors(from, new THREE.Vector3(target.x, .05, -.55), ease(t));
+          }, () => { card.visible = false; }, wait, "cards");
         }
       }
     }
@@ -626,9 +650,10 @@ export async function createTableScene(canvas, host) {
     const actions = state.histories.flat();
     const newHand = renderedHand !== state;
     const newAction = !newHand && previous && actions.length > previous.actionCount;
-    if (newHand || newAction) settleAnimations();
+    if (newHand || newAction) settleAnimations(newHand);
     // Hidden cards never reach the renderer, including its texture cache.
-    const agentCards = reveal ? hole[agent] : [null, null];
+    const opponentFolded = finished && actions.at(-1) === "fold" && state.winner === user;
+    const agentCards = reveal && !opponentFolded ? hole[agent] : [null, null];
     if (renderedHand !== state) {
       cards.clear();
       heldCards.clear();
@@ -643,18 +668,31 @@ export async function createTableScene(canvas, host) {
       renderedHand = state;
       // Lift the cards and the gripping hand together; sliding cards through a
       // stationary grip creates intersections during the deal.
-      animate(430, (t) => { pocketPose.position.y = -.65 * (1 - ease(t)); });
+      animate(430, (t) => { pocketPose.position.y = -.65 * (1 - ease(t)); }, undefined, 0, "cards");
     }
+    const now = performance.now();
+    let cardsReadyAt = now;
     const signature = JSON.stringify([hole[user], agentCards, board]);
     if (signature !== cardSignature) {
       hole[user].forEach((card, i) => placeCard(`user-${i}`, card, -.20 + i * .40, i * .045, i ? -.10 : .10, i * 70, true));
-      agentCards.forEach((card, i) => placeCard(`agent-${i}`, card, -.33 + i * .66, -1.74, Math.PI + (i ? -.035 : .035)));
-      board.forEach((card, i) => placeCard(`board-${i}`, card, (i - 2) * .80, .58, 0, i * 50));
+      agentCards.forEach((card, i) => {
+        cardsReadyAt = Math.max(cardsReadyAt, placeCard(`agent-${i}`, card, -.33 + i * .66, -1.74, Math.PI + (i ? -.035 : .035), 100 + i * 160));
+      });
+      let dealt = 0;
+      board.forEach((card, i) => {
+        // Keep a beat between flop, turn, and river on an all-in runout.
+        let delay = 160 + dealt * 170;
+        if (!cardMeshes.has(`board-${i}`)) {
+          if (i >= 3 && dealt) delay += (i - 2) * 350;
+          dealt++;
+        }
+        cardsReadyAt = Math.max(cardsReadyAt, placeCard(`board-${i}`, card, (i - 2) * .80, .58, 0, delay));
+      });
       cardSignature = signature;
     }
     const chipState = JSON.stringify([stacks, bets, pot, finished]);
     if (chipState !== chipSignature) {
-      drawChips(state, previous);
+      drawChips(state, previous, finished ? Math.max(0, cardsReadyAt - now) + 120 : 0);
       chipSignature = chipState;
     }
     if (newAction) {

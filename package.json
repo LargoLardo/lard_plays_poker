@@ -7,7 +7,7 @@
     "dev": "npm run build && python3 -m http.server 8000 --directory public",
     "build": "node tools/build-scene.mjs && node tools/verify-web.mjs",
     "test:web": "node tools/test-model-policy.mjs",
-    "test:ui": "node tools/test-table.mjs"
+    "test:ui": "node tools/test-card-motion.mjs && node tools/test-table.mjs"
   },
   "dependencies": {
     "three": "0.186.1"
