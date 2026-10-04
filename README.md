@@ -2,21 +2,37 @@
 
 ## Play in the browser
 
-The repository includes a dependency-free web table backed by the bundled
-10-million-iteration full-game strategy. Gameplay and the filterable 13x13
-strategy explorer live on separate tabs, and the player's stack persists
-between completed hands in browser storage.
+The browser table puts you in a first-person poker room, holding your cards
+above green felt and a dark wood rail. A single overhead light picks out
+the table and your opponent's hands; the rest of the room fades into darkness.
+Rigged white-gloved hands hold your cards and gesture when checking or betting.
+Beveled chips slide into bets, collect between streets, and move to the winner.
+Cards leave a visible deck in sequence, and showdown uses staggered, full card
+turnovers. Deals keep moving through quick actions; pots wait for the reveal.
+The scene respects reduced-motion preferences. The hand meshes are bundled locally under the MIT license; see
+[asset provenance](public/assets/hands/SOURCE.md).
+
+Cards, bets, and chip stacks follow the bundled 10-million-iteration full-game
+strategy. The filterable 13x13 strategy explorer lives in Study, and the
+player's stack persists between completed hands in browser storage.
+Browsers without WebGL use a playable flat table automatically.
 
 For the quickest local development server, run:
 
 ```bash
-python -m http.server 8000 --directory public
+npm install
+npm run dev
 ```
 
-Then open `http://localhost:8000`. To reproduce Vercel's development routing,
+Then open `http://localhost:8000`. The build bundles Three.js locally, so no
+CDN is needed to load the scene. After `npm run build`, you can also serve
+`public/` with any static server. To reproduce Vercel's development routing,
 run `npx vercel dev` instead. You can also import the repository into Vercel and
 deploy with the default settings. No environment variables or database are
-required.
+required. Run `npm run test:web` for the strategy checks. For the browser
+checks, run `npx playwright install chromium` once, then `npm run test:ui`.
+The browser checks cover betting, every street, showdown, mobile layout,
+the strategy explorer, and the fallback table. Screenshots go to `artifacts/`.
 
 Open the browser developer console while playing to inspect the agent trace.
 Each hand logs an ISO timestamp and Lard's cards; each decision logs its
@@ -79,4 +95,3 @@ My solver solution for Preflop Open after 10 million iterations and approximatel
 
 
 <img width="800" height="800" alt="image" src="https://github.com/user-attachments/assets/cc56bab4-1349-4b92-acd2-f55b8a789f14" />
-

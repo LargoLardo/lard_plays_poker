@@ -8,3 +8,5 @@ game_log.txt
 nodesets
 node_modules
 .vercel
+public/table-scene.bundle.js
+artifacts/
