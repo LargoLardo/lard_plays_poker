@@ -97,6 +97,46 @@ class TrainingTests(unittest.TestCase):
             self.assertEqual(raw.iterations, 5)
             self.assertFalse(path.with_name(path.name + '.tmp').exists())
 
+    def test_iteration_snapshots_resume_and_preserve_existing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'nested' / 'run.pkl'
+            snapshots = output.parent / 'run-snapshots'
+            pf.train(7, seed=9, output=output, snapshot_every=3)
+            self.assertEqual(sorted(p.name for p in snapshots.iterdir()), ['iter-3.pkl', 'iter-6.pkl'])
+            pf.train(3, resume=output, snapshot_every=3)
+            for count, path in ((3, snapshots / 'iter-3.pkl'), (6, snapshots / 'iter-6.pkl'),
+                                (9, snapshots / 'iter-9.pkl'), (10, output)):
+                reference_path = root / f'reference-{count}.pkl'
+                reference = pf.train(count, seed=9, output=reference_path)
+                saved = load_nodes(path)
+                self.assertEqual(saved.iterations, count)
+                self.assertEqual(saved.rng_state, reference.rng_state)
+                self.assertEqual(set(saved), set(reference))
+                for key in saved:
+                    self.assertEqual(saved[key].regret_sum, reference[key].regret_sum)
+                    self.assertEqual(saved[key].strategy_sum, reference[key].strategy_sum)
+                    self.assertEqual(saved[key].times_visited, reference[key].times_visited)
+            self.assertFalse((root / 'reference-10-snapshots').exists())
+            original = (snapshots / 'iter-6.pkl').read_bytes()
+            pf.train(3, resume=snapshots / 'iter-3.pkl', output=output,
+                     snapshot_every=3, reset_average=True)
+            self.assertEqual((snapshots / 'iter-6.pkl').read_bytes(), original)
+            self.assertFalse(list(snapshots.glob('*.tmp')))
+            with self.assertRaises(ValueError):
+                pf.train(0, snapshot_every=-1, output=root / 'invalid.pkl')
+
+    def test_parallel_snapshots_stop_batches_at_exact_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'parallel.pkl'
+            result = pf.train(9, n_workers=2, merge_every=3, seed=9,
+                              output=output, snapshot_every=4)
+            self.assertEqual(result.iterations, 9)
+            snapshots = output.parent / 'parallel-snapshots'
+            self.assertEqual(sorted(p.name for p in snapshots.iterdir()), ['iter-4.pkl', 'iter-8.pkl'])
+            for count in (4, 8):
+                self.assertEqual(load_nodes(snapshots / f'iter-{count}.pkl').iterations, count)
+
     def test_worker_snapshot_does_not_grow_on_regret_reads(self):
         node = pf.Node()
         state = pf.create_state()

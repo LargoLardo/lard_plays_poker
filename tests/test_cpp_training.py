@@ -147,6 +147,45 @@ class CppTrainingTests(unittest.TestCase):
                     else:
                         self.assertEqual(native[key], value, (cases[index], key))
 
+    def test_iteration_snapshots_resume_and_preserve_existing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'nested' / 'run.bin'
+            snapshots = output.parent / 'run-snapshots'
+            first = run('--iterations', 7, '--samples', 10, '--seed', 9,
+                        '--snapshot-every', 5, '--output', output)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual([p.name for p in snapshots.iterdir()], ['iter-5.bin'])
+            resumed = run('--resume', output, '--iterations', 5, '--snapshot-every', 5)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(sorted(p.name for p in snapshots.iterdir()), ['iter-10.bin', 'iter-5.bin'])
+            for count, path in ((5, snapshots / 'iter-5.bin'),
+                                (10, snapshots / 'iter-10.bin'), (12, output)):
+                reference = root / f'reference-{count}.bin'
+                result = run('--iterations', count, '--samples', 10, '--seed', 9, '--output', reference)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(read_checkpoint(path), read_checkpoint(reference))
+            self.assertFalse((root / 'reference-12-snapshots').exists())
+            fork = root / 'fork.bin'
+            result = run('--resume', snapshots / 'iter-5.bin', '--iterations', 7, '--output', fork)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(fork), read_checkpoint(output))
+            original = (snapshots / 'iter-10.bin').read_bytes()
+            rewind = run('--resume', snapshots / 'iter-5.bin', '--reset-average',
+                         '--iterations', 5, '--snapshot-every', 5, '--output', output)
+            self.assertEqual(rewind.returncode, 0, rewind.stderr)
+            self.assertIn('Keeping existing snapshot', rewind.stdout)
+            self.assertEqual((snapshots / 'iter-10.bin').read_bytes(), original)
+            self.assertFalse(list(snapshots.glob('*.tmp')))
+            self.assertNotEqual(run('--snapshot-every', -1, '--iterations', 0,
+                                    '--output', root / 'invalid.bin').returncode, 0)
+            limited = root / 'limited.bin'
+            result = run('--iterations', 10, '--samples', 10, '--max-nodes', 1,
+                         '--snapshot-every', 1, '--output', limited)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(limited)[2], 0)
+            self.assertFalse((root / 'limited-snapshots').exists())
+
     def test_cli_resume_exports_and_memory_stop(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

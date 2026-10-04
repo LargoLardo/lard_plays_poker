@@ -238,6 +238,17 @@ void save(const Trainer& trainer, const fs::path& path) {
     });
     finish_file(out, temporary, path);
 }
+void save_snapshot(const Trainer& trainer, const fs::path& output) {
+    auto directory = output.parent_path() / (output.stem().string() + "-snapshots");
+    auto extension = output.has_extension() ? output.extension().string() : ".bin";
+    auto path = directory / ("iter-" + std::to_string(trainer.iterations) + extension);
+    if (fs::exists(path)) {
+        std::cout << "Keeping existing snapshot " << path << '\n';
+        return;
+    }
+    save(trainer, path);
+    std::cout << "Saved snapshot " << path << '\n';
+}
 void load(Trainer& trainer, const fs::path& path, bool mode_set, bool samples_set, bool reset_average = false) {
     std::ifstream in(path, std::ios::binary);
     char magic[8]; in.read(magic, 8);
@@ -312,7 +323,7 @@ uint64_t number(const std::string& value) {
 int main(int argc, char** argv) {
     try {
         static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559, "Requires IEEE 754 doubles");
-        uint64_t iterations = 100'000, seed = 1, memory_mb = 256, max_nodes = 0, checkpoint_every = 60;
+        uint64_t iterations = 100'000, seed = 1, memory_mb = 256, max_nodes = 0, checkpoint_every = 60, snapshot_every = 0;
         int samples = 100;
         bool preflop = false, mode_set = false, samples_set = false, reset_average = false;
         fs::path output, resume, export_dir;
@@ -330,6 +341,7 @@ int main(int argc, char** argv) {
                     "  --resume PATH         Load checkpoint, including mode/samples/RNG\n"
                     "  --reset-average       Discard old averages/visits on resume, retaining regrets\n"
                     "  --checkpoint-every N  Seconds between atomic saves (default 60)\n"
+                    "  --snapshot-every N    Retain a separate checkpoint every N total hands (0 disables)\n"
                     "  --export DIR          Write compatible browser JSON after training\n";
                 return 0;
             }
@@ -341,6 +353,7 @@ int main(int argc, char** argv) {
             else if (flag == "--memory-mb") memory_mb = number(value);
             else if (flag == "--max-nodes") max_nodes = number(value);
             else if (flag == "--checkpoint-every") checkpoint_every = number(value);
+            else if (flag == "--snapshot-every") snapshot_every = number(value);
             else if (flag == "--samples") {
                 auto count = number(value);
                 if (!count || count > 1'000'000) throw std::runtime_error("Samples must be 1..1000000");
@@ -367,6 +380,8 @@ int main(int argc, char** argv) {
         std::cout << (trainer.preflop ? "Preflop" : "Full-game") << ": " << memory_mb << " MiB budget, "
                   << trainer.max_nodes << " node limit; checkpoint " << output << '\n';
         while (trainer.iterations - before < iterations && !interrupted && trainer.step()) {
+            if (snapshot_every && trainer.iterations % snapshot_every == 0)
+                save_snapshot(trainer, output);
             auto now = Clock::now();
             if (std::chrono::duration<double>(now - last_save).count() >= checkpoint_every) {
                 save(trainer, output); last_save = now;

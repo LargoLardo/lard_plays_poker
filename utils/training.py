@@ -76,12 +76,13 @@ def save_nodes(nodes, path):
 def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
                iters=100_000, n_workers=1, merge_every=1000, output=None,
                resume=None, seed=1, samples=100, cache_size=10_000,
-               max_nodes=200_000, checkpoint_every=60, reset_average=False):
+               max_nodes=200_000, checkpoint_every=60, reset_average=False,
+               snapshot_every=0):
     n_workers = n_workers or 1
     if iters < 0 or n_workers < 1 or merge_every < 1 or samples < 1:
         raise ValueError("iterations must be nonnegative; workers/chunk/samples must be positive")
-    if max_nodes < 1 or cache_size < 0 or checkpoint_every < 0:
-        raise ValueError("max_nodes must be positive; cache/checkpoint interval must be nonnegative")
+    if max_nodes < 1 or cache_size < 0 or checkpoint_every < 0 or snapshot_every < 0:
+        raise ValueError("max_nodes must be positive; cache/checkpoint/snapshot interval must be nonnegative")
     nodes = load_nodes(resume) if resume else NodeStore()
     if nodes.trainer and (nodes.trainer != trainer or nodes.samples != samples):
         raise ValueError("Resume with the same trainer and sample count")
@@ -113,6 +114,19 @@ def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
         nodes.rng_state = random.getstate()
         save_nodes(nodes, output)
 
+    def save_snapshot():
+        if not snapshot_every or nodes.iterations % snapshot_every:
+            return
+        target = Path(output)
+        directory = target.parent / (target.stem + "-snapshots")
+        path = directory / f"iter-{nodes.iterations}{target.suffix or '.pkl'}"
+        if path.exists():
+            print(f"Keeping existing snapshot {path}")
+            return
+        nodes.rng_state = random.getstate()
+        save_nodes(nodes, path)
+        print(f"Saved snapshot {path}")
+
     try:
         with tqdm(total=iters, desc="Hands", unit="hand") as progress:
             if n_workers == 1:
@@ -122,6 +136,7 @@ def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
                     nodes.iterations += 1
                     remaining -= 1
                     progress.update(1)
+                    save_snapshot()
                     if time.monotonic() - saved_at >= checkpoint_every:
                         checkpoint()
                         saved_at = time.monotonic()
@@ -132,18 +147,23 @@ def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
                         snapshot = pickle.dumps(nodes, protocol=pickle.HIGHEST_PROTOCOL)
                         args = []
                         offset = nodes.iterations
+                        batch_remaining = remaining
+                        if snapshot_every:
+                            batch_remaining = min(remaining, snapshot_every - offset % snapshot_every)
                         for _ in range(n_workers):
-                            count = min(merge_every, remaining)
+                            count = min(merge_every, batch_remaining)
                             if not count:
                                 break
                             args.append((count, random.getrandbits(32), snapshot, offset, samples, cache_size))
                             offset += count
                             remaining -= count
+                            batch_remaining -= count
                         for delta, count in pool.imap(run_chunk, args, chunksize=1):
                             merge_nodes(nodes, delta)
                             nodes.iterations += count
                             progress.update(count)
                         del snapshot, args, delta
+                        save_snapshot()
                         if time.monotonic() - saved_at >= checkpoint_every:
                             checkpoint()
                             saved_at = time.monotonic()
@@ -166,6 +186,7 @@ def training_main(train):
     parser.add_argument("--cache-size", type=int, default=10_000, help="Maximum joint equity/potential cache entries; 0 disables")
     parser.add_argument("--max-nodes", type=int, default=200_000)
     parser.add_argument("--checkpoint-every", type=float, default=60, help="Seconds between atomic saves")
+    parser.add_argument("--snapshot-every", type=int, default=0, help="Retain a separate checkpoint every N total hands; 0 disables")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output")
     parser.add_argument("--resume")
@@ -174,4 +195,5 @@ def training_main(train):
     train(args.iterations, args.workers, args.chunk_size, output=args.output,
           resume=args.resume, seed=args.seed, samples=args.samples,
           cache_size=args.cache_size, max_nodes=args.max_nodes,
-          checkpoint_every=args.checkpoint_every, reset_average=args.reset_average)
+          checkpoint_every=args.checkpoint_every, reset_average=args.reset_average,
+          snapshot_every=args.snapshot_every)
