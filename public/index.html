@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#090b0a" />
-    <meta name="description" content="Play heads-up hold'em against a 10-million-iteration MCCFR poker agent." />
+    <meta name="description" content="Play heads-up hold'em and study strategies from trained MCCFR poker agents." />
     <title>Lard Plays Poker</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -22,9 +22,10 @@
         <details id="sessionMenu" class="session-menu">
           <summary aria-label="Session settings">•••</summary>
           <div class="session-popover">
+            <label class="nodeset-picker"><span>Nodeset</span><select id="nodesetSelect" aria-describedby="modelStatus" disabled><option value="bundled">Bundled · 10M</option></select></label>
             <button id="newHandTop" class="button ghost">Deal a new hand</button>
             <button id="newGameTop" class="button ghost danger">Reset stacks</button>
-            <span id="modelStatus" class="status"><i></i> Loading strategy</span>
+            <span id="modelStatus" class="status" role="status"><i></i> Loading strategy</span>
           </div>
         </details>
       </div>

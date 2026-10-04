@@ -39,6 +39,9 @@ summary::-webkit-details-marker { display: none; }
 .button.primary { color: #171a12; background: var(--gold); border-color: var(--gold); }
 .button.danger { color: #d69c91; }
 .session-popover .button { text-align: left; background: transparent; }
+.nodeset-picker { display: grid; gap: 7px; min-width: 0; }
+.nodeset-picker span { font: 10px var(--mono); color: var(--muted); }
+.nodeset-picker select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font-size: 11px; }
 main { margin: 0 auto; }
 #gameplayPanel { position: relative; height: 100svh; min-height: 560px; display: flex; flex-direction: column; }
 .table-shell { position: relative; flex: 1; min-height: 0; isolation: isolate; overflow: hidden; }

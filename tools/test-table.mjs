@@ -72,6 +72,54 @@ try {
   await screenshot(smoke, "table-desktop");
   await smoke.close();
 
+  // Switching updates Study now and Play next hand, and a failed load is atomic.
+  const switching = await pageFor();
+  await switching.clock.install({ time: new Date("2026-10-04T12:00:00Z") });
+  await switching.clock.pauseAt(new Date("2026-10-04T12:00:01Z"));
+  await switching.addInitScript(() => { Math.random = () => .5; });
+  await forceCalls(switching);
+  const raisedPreflop = JSON.parse(await readFile("public/preflop-model.json", "utf8"));
+  const raisedPostflop = JSON.parse(await readFile("public/postflop-model.json", "utf8"));
+  for (const nodes of [raisedPreflop, raisedPostflop]) for (const key of Object.keys(nodes)) nodes[key] = [0, 0, 1, 50_000];
+  await switching.route("**/api/nodesets", (route) => route.fulfill({ json:[
+    { id:"raising", label:"Test raising", preflop:"/raising-pre.json", postflop:"/raising-post.json" },
+    { id:"broken", label:"Unavailable", preflop:"/raising-pre.json", postflop:"/missing-post.json" },
+  ] }));
+  await switching.route("**/raising-pre.json", (route) => route.fulfill({ json:raisedPreflop }));
+  await switching.route("**/raising-post.json", (route) => route.fulfill({ json:raisedPostflop }));
+  await switching.route("**/missing-post.json", (route) => route.fulfill({ status:500 }));
+  await switching.goto(url);
+  await switching.waitForSelector("#modelStatus.ready", { state:"attached" });
+  await switching.locator("#sessionMenu summary").click();
+  await switching.selectOption("#nodesetSelect", "raising");
+  await switching.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  assert.match(await switching.locator("#modelStatus").textContent(), /applies next hand/);
+  await switching.locator("#studyTab").click();
+  assert.equal(await switching.locator("#rangeRaise").textContent(), "100.0%");
+  await switching.locator("#sessionMenu summary").click();
+  await switching.selectOption("#nodesetSelect", "broken");
+  await switching.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  assert.equal(await switching.locator("#nodesetSelect").inputValue(), "raising");
+  assert.equal(await switching.locator("#rangeRaise").textContent(), "100.0%");
+  assert.match(await switching.locator("#modelStatus").textContent(), /Still using Test raising/);
+  await switching.locator("#playTab").click();
+  await switching.locator("#callButton").click();
+  await switching.clock.runFor(4100);
+  assert.equal(await switching.locator("#street").textContent(), "Flop", "The existing hand keeps its call policy");
+  assert.match(await switching.locator("#lastAction").textContent(), /checks/, "Postflop also keeps the previous model");
+  await switching.locator("#sessionMenu summary").click();
+  await switching.locator("#newHandTop").click();
+  await switching.clock.runFor(2100);
+  assert.match(await switching.locator("#lastAction").textContent(), /raises/, "The next hand uses the selected model");
+  await switching.reload();
+  await switching.waitForSelector("#modelStatus.ready", { state:"attached" });
+  assert.equal(await switching.locator("#nodesetSelect").inputValue(), "raising", "Selection survives reload");
+  await switching.setViewportSize({ width:320, height:568 });
+  await switching.locator("#sessionMenu summary").click();
+  const picker = await switching.locator("#nodesetSelect").boundingBox();
+  assert.ok(picker.x >= 0 && picker.x + picker.width <= 320, "The selector fits on a phone");
+  await switching.close();
+
   // Force the trained action mix to check/call so every street is repeatable.
   const page = await pageFor();
   await page.addInitScript(() => { Math.random = () => .5; });

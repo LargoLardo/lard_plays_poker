@@ -12,8 +12,8 @@ turnovers. Deals keep moving through quick actions; pots wait for the reveal.
 The scene respects reduced-motion preferences. The hand meshes are bundled locally under the MIT license; see
 [asset provenance](public/assets/hands/SOURCE.md).
 
-Cards, bets, and chip stacks follow the bundled 10-million-iteration full-game
-strategy. The filterable 13x13 strategy explorer lives in Study, and the
+Cards, bets, and chip stacks follow the selected strategy, starting with the
+bundled 10-million-iteration full-game model. The filterable 13x13 strategy explorer lives in Study, and the
 player's stack persists between completed hands in browser storage.
 Browsers without WebGL use a playable flat table automatically.
 
@@ -33,6 +33,20 @@ required. Run `npm run test:web` for the strategy checks. For the browser
 checks, run `npx playwright install chromium` once, then `npm run test:ui`.
 The browser checks cover betting, every street, showdown, mobile layout,
 the strategy explorer, and the fallback table. Screenshots go to `artifacts/`.
+
+Open **••• → Nodeset** to choose a local `.bin` or `.pkl` checkpoint, including
+iteration snapshots under `nodesets/`. Study updates immediately; Play uses the
+selection from the next hand. The browser remembers your choice. Refresh the
+page to discover newly saved checkpoints. The local server exports only the
+chosen checkpoint and caches its JSON under `artifacts/web-models/`; it reads
+the training files without changing them.
+
+If the scene is already built, start the same frontend directly with
+`venv/bin/python tools/serve.py` (Windows: `py -3 tools/serve.py`). C++ selections
+need the same C++17 compiler as training; Python selections need the training
+dependencies. `npm run dev` now uses this server. A plain static server or
+the deployed static site offers the bundled model; local checkpoint selection
+uses the `/api/nodesets` routes supplied by `tools/serve.py`.
 
 Open the browser developer console while playing to inspect the agent trace.
 Each hand logs an ISO timestamp and Lard's cards; each decision logs its

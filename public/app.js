@@ -13,7 +13,7 @@ const SPARSE_NODE_THRESHOLD = 1_500;
 
 const $ = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
-  "modelStatus", "agentSeat", "userSeat", "agentStack", "userStack", "agentPosition", "userPosition", "agentCards", "userCards",
+  "modelStatus", "nodesetSelect", "agentSeat", "userSeat", "agentStack", "userStack", "agentPosition", "userPosition", "agentCards", "userCards",
   "agentBet", "userBet", "pot", "board", "message", "street", "toCall", "lastAction", "actions",
   "foldButton", "callButton", "raiseButton", "raiseSlider", "raiseOutput", "finishedActions", "newHandButton", "cancelNextHandButton",
   "newHandTop", "newGameTop", "resultDetail", "nextHandCountdown", "rangePosition", "rangeHistory", "rangeStack", "rangeSize", "rangeGrid", "rangeFold", "rangeCall", "rangeRaise",
@@ -24,6 +24,10 @@ let model = {};
 let postflopStrategy = new PostflopStrategy();
 let rangeMode = "all";
 let rangeSpots = [];
+const nodesets = [{ id:"bundled", label:"Bundled · 10M", preflop:"/preflop-model.json", postflop:"/postflop-model.json" }];
+const NODESET_STORAGE_KEY = "lard-plays-poker-nodeset";
+let activeNodeset = null;
+let modelRequest = null;
 const savedProgress = loadProgress();
 let handNumber = savedProgress.handNumber;
 let bankroll = savedProgress.bankroll;
@@ -98,8 +102,10 @@ function newHand() {
     user, agent, actor: 1, street: 0,
     pending: new Set([0, 1]), histories: [[], [], [], []], lastRaise: 1,
     finished: false, reveal: false, lastAction: "Blinds posted", result: "", winner: null,
+    nodeset: activeNodeset, preflopModel: model, postflopModel: postflopStrategy,
   };
   pay(0, 1); pay(1, 0.5);
+  updateModelStatus();
   logNewHand();
   render();
   if (game.actor === game.agent) scheduleAgent();
@@ -111,6 +117,7 @@ function logNewHand() {
   console.log("Timestamp:", timestamp);
   console.log("Lard's cards:", game.hole[game.agent].join(" "));
   console.log("Lard's position:", game.agent === 1 ? "SB" : "BB");
+  console.log("Nodeset:", game.nodeset?.label || "Heuristic strategy");
   console.log("Stacks:", { player: `${bankroll[0]} BB`, lard: `${bankroll[1]} BB` });
   console.groupEnd();
 }
@@ -354,7 +361,7 @@ function preflopDecisionContext() {
   const stack = effective < 20 ? "short" : effective < 50 ? "medium" : "deep";
   const bucket = [hand, game.agent === 1 ? "SB" : "BB", stack, historyBucket(history), sizeBucket(history)];
   const key = bucket.join("|");
-  const match = findPreflopStrategy(model, bucket, modelActionMask(game));
+  const match = findPreflopStrategy(game.preflopModel, bucket, modelActionMask(game));
   const fallback = heuristicPreflop(hand, history, toCall(game.agent) > 0);
   if (!match) return { weights:fallback, spot:key, source:"heuristic fallback (untrained node and no neighboring trained size)" };
   const blended = blendSparseStrategy(match.strategy, fallback, SPARSE_NODE_THRESHOLD);
@@ -394,17 +401,8 @@ function initializeRangeExplorer() {
     const mask = spot.split("|")[4];
     return { position, stack, history, size, mask };
   });
-  const filters = [ui.rangePosition, ui.rangeStack, ui.rangeHistory, ui.rangeSize];
-  filters.forEach((filter, index) => filter.addEventListener("change", () => {
-    populateRangeFilters(index + 1);
-    renderRange();
-  }));
   populateRangeFilters(0);
-  document.querySelectorAll("[data-range-action]").forEach((button) => button.addEventListener("click", () => {
-    rangeMode = button.dataset.rangeAction;
-    document.querySelectorAll("[data-range-action]").forEach((item) => item.classList.toggle("active", item === button));
-    renderRange();
-  }));
+  ui.rangeDetail.textContent = "Hover or tap a hand to see its exact action mix.";
   renderRange();
 }
 
@@ -428,7 +426,7 @@ function populateRangeFilters(startIndex) {
     filters[index].element.disabled = values.length <= 1;
   }
   const sizingCount = ui.rangeSize.options.length;
-  ui.spotCoverage.textContent = sizingCount <= 1
+  ui.spotCoverage.textContent = !sizingCount ? "No averaged preflop nodes yet." : sizingCount === 1
     ? "One sizing was trained for this node; additional sizes require a wider training tree."
     : `${sizingCount} trained sizings are available for this node.`;
 }
@@ -491,7 +489,7 @@ function postflopDecisionContext() {
   else if (equity + .06 >= potOdds) heuristic = [.12, .76, .12];
   else heuristic = [.78, .21, .01];
 
-  const match = postflopStrategy.find(features.bucket, modelActionMask(game));
+  const match = game.postflopModel.find(features.bucket, modelActionMask(game));
   const diagnostic = `${STREET_NAMES[game.street]}|bucket:${features.key}|equity:${(equity * 100).toFixed(1)}%|ppot:${(features.ppot * 100).toFixed(1)}%|npot:${(features.npot * 100).toFixed(1)}%`;
   if (!match) return { weights:heuristic, spot:diagnostic, source:"heuristic fallback (no trained node in this context)" };
 
@@ -582,6 +580,16 @@ ui.newHandButton.addEventListener("click", () => bankroll.some((stack) => stack 
 ui.cancelNextHandButton.addEventListener("click", cancelNextHand);
 ui.newHandTop.addEventListener("click", newHand);
 ui.newGameTop.addEventListener("click", startNewGame);
+ui.nodesetSelect.addEventListener("change", () => loadNodeset(ui.nodesetSelect.value));
+[ui.rangePosition, ui.rangeStack, ui.rangeHistory, ui.rangeSize].forEach((filter, index) => filter.addEventListener("change", () => {
+  populateRangeFilters(index + 1);
+  renderRange();
+}));
+document.querySelectorAll("[data-range-action]").forEach((button) => button.addEventListener("click", () => {
+  rangeMode = button.dataset.rangeAction;
+  document.querySelectorAll("[data-range-action]").forEach((item) => item.classList.toggle("active", item === button));
+  renderRange();
+}));
 document.querySelectorAll(".session-popover button").forEach((button) => button.addEventListener("click", () => { $("sessionMenu").open = false; }));
 document.addEventListener("click", (event) => {
   if (!$("sessionMenu").contains(event.target)) $("sessionMenu").open = false;
@@ -616,21 +624,60 @@ document.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "r" && !ui.raiseButton.disabled) ui.raiseButton.click();
 });
 
-try {
-  const [preflopNodes, postflopNodes] = await Promise.all([
-    fetch("/preflop-model.json"),
-    fetch("/postflop-model.json"),
-  ]).then(async (responses) => {
-    if (responses.some((response) => !response.ok)) throw new Error("Strategy unavailable");
-    return Promise.all(responses.map((response) => response.json()));
-  });
-  model = preflopNodes;
-  postflopStrategy = new PostflopStrategy(postflopNodes);
-  const totalNodes = Object.keys(preflopNodes).length + Object.keys(postflopNodes).length;
-  ui.modelStatus.classList.add("ready"); ui.modelStatus.lastChild.textContent = ` ${totalNodes.toLocaleString()} full-game strategy nodes`;
-  initializeRangeExplorer();
-} catch (error) {
-  ui.modelStatus.lastChild.textContent = " Heuristic strategy";
-  ui.rangeGrid.innerHTML = '<p class="range-error">The trained strategy could not be loaded.</p>';
+function updateModelStatus() {
+  if (modelRequest) return;
+  // Counts come from the loaded export; the current hand retains its own policy.
+  ui.modelStatus.lastChild.textContent = activeNodeset
+    ? ` ${activeNodeset.label} · ${activeNodeset.nodeCount.toLocaleString()} nodes${game && game.nodeset?.id !== activeNodeset.id ? " · applies next hand" : ""}`
+    : " Heuristic strategy";
 }
+
+async function loadNodeset(id) {
+  const selected = nodesets.find((item) => item.id === id);
+  if (!selected) return;
+  modelRequest?.abort();
+  const request = new AbortController();
+  modelRequest = request;
+  ui.nodesetSelect.setAttribute("aria-busy", "true");
+  ui.modelStatus.lastChild.textContent = ` Loading ${selected.label}…`;
+  try {
+    const [preflopNodes, postflopNodes] = await Promise.all([selected.preflop, selected.postflop].map(async (path) => {
+      const response = await fetch(path, { signal:request.signal });
+      if (!response.ok) throw new Error("Strategy unavailable");
+      return response.json();
+    }));
+    const nextPostflop = new PostflopStrategy(postflopNodes);
+    if (modelRequest !== request) return;
+    model = preflopNodes;
+    postflopStrategy = nextPostflop;
+    activeNodeset = { ...selected, nodeCount:Object.keys(preflopNodes).length + Object.keys(postflopNodes).length };
+    ui.nodesetSelect.value = id;
+    ui.modelStatus.classList.add("ready");
+    initializeRangeExplorer();
+    try { localStorage.setItem(NODESET_STORAGE_KEY, id); } catch (_) { /* Selection still works without storage. */ }
+  } catch (error) {
+    if (modelRequest !== request) return;
+    ui.nodesetSelect.value = activeNodeset?.id || "bundled";
+    ui.modelStatus.lastChild.textContent = ` Could not load ${selected.label}.${activeNodeset ? ` Still using ${activeNodeset.label}.` : " Using heuristics."}`;
+    if (!activeNodeset) ui.rangeGrid.innerHTML = '<p class="range-error">The trained strategy could not be loaded.</p>';
+    console.warn("Nodeset could not be loaded:", error);
+  } finally {
+    if (modelRequest === request) {
+      modelRequest = null;
+      ui.nodesetSelect.removeAttribute("aria-busy");
+      if (activeNodeset?.id === id) updateModelStatus();
+    }
+  }
+}
+
+try {
+  const response = await fetch("/api/nodesets", { cache:"no-store" });
+  if (response.ok) nodesets.push(...await response.json());
+} catch (_) { /* Static hosting still offers the bundled model. */ }
+ui.nodesetSelect.replaceChildren(...nodesets.map((item) => new Option(item.label, item.id)));
+ui.nodesetSelect.disabled = nodesets.length < 2;
+let selectedId = "bundled";
+try { selectedId = localStorage.getItem(NODESET_STORAGE_KEY) || selectedId; } catch (_) { /* Use the bundled default. */ }
+await loadNodeset(nodesets.some((item) => item.id === selectedId) ? selectedId : "bundled");
+if (!activeNodeset && selectedId !== "bundled") await loadNodeset("bundled");
 newHand();
