@@ -35,6 +35,23 @@ void unit_tests() {
     Trainer limited(false, 10, 9, budget, 1);
     auto before = limited.rng;
     assert(!limited.step() && limited.iterations == 0 && limited.nodes.size() == 0 && limited.rng == before);
+    Trainer parallel(false, 10, 9, budget, 0), parallel_copy(false, 10, 9, budget, 0);
+    parallel.workers = parallel_copy.workers = 3;
+    parallel.chunk_size = parallel_copy.chunk_size = 4;
+    ParallelTrainer pool(parallel), pool_copy(parallel_copy);
+    for (int i = 0; i < 4; ++i) { assert(pool.step(12)); assert(pool_copy.step(12)); }
+    assert(parallel.rng == parallel_copy.rng && parallel.iterations == 48);
+    parallel.nodes.each([&](uint32_t key, const Node& node) {
+        const auto* other = parallel_copy.nodes.get(key); assert(other);
+        assert(node.regret == other->regret && node.strategy == other->strategy && node.visits == other->visits);
+        for (int action = 0; action < 3; ++action) if (!(key_actions(key) & (1 << action)))
+            assert(node.regret[action] == 0 && node.strategy[action] == 0);
+    });
+    Trainer parallel_limited(false, 10, 9, budget, 1);
+    parallel_limited.workers = 3; parallel_limited.chunk_size = 4;
+    auto parallel_rng = parallel_limited.rng;
+    ParallelTrainer limited_pool(parallel_limited);
+    assert(!limited_pool.step(12) && parallel_limited.iterations == 0 && parallel_limited.nodes.size() == 0 && parallel_limited.rng == parallel_rng);
     Trainer average(false, 1, 1, budget, 0);
     average.cards = {0, 1, 2, 3, 4, 5, 6, 7, 8};
     for (auto& row : average.hands) row.fill(-1);

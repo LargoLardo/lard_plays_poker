@@ -1,7 +1,7 @@
 # Python and C++ training review
 
 Reviewed October 4, 2026: `pf_mccfr.py`, `full_game_mccfr.py`, the standalone C++
-trainer in both modes, the bundled `FULLGAME_10m_iters.pkl`, and local C++ v1/v2/v3
+trainer in both modes, the bundled `FULLGAME_10m_iters.pkl`, and local C++ v1/v2/v3/v4
 checkpoints. Original models and the Python implementations are preserved.
 
 External-sampling MCCFR is a sound foundation for heads-up, zero-sum poker.
@@ -12,8 +12,8 @@ and the absence of Hold'em strength measurements. These models should not yet
 be described as validated GTO strategies.
 
 The MCCFR convergence results assume perfect recall and consistent actions
-within each information set. The legal-action inconsistency is now fixed. The buckets still lack perfect
-recall. See the [original MCCFR paper](https://www.cs.cmu.edu/~waugh/publications/nips09b.pdf).
+within each information set. The legal-action inconsistency is now fixed.
+The buckets still lack perfect recall. See the [original MCCFR paper](https://www.cs.cmu.edu/~waugh/publications/nips09b.pdf).
 
 ## Correctness changes applied to both implementations
 
@@ -25,8 +25,8 @@ the Kuhn reference now follow that rule. [OpenSpiel's reference implementation](
 documents and implements the same separation.
 
 New Python stores record algorithm version 2 and bucket schema 2; native
-checkpoints use `LARDCPP3`. Every training key includes the exact available
-fold/call/raise mask, after checking the prescribed or sampled raise amount.
+checkpoints use `LARDCPP4` (V3 keys plus worker/chunk metadata). Every training
+key includes the exact available fold/call/raise mask, after checking the prescribed or sampled raise amount.
 The C++ mask uses two spare key bits, preserving the 32-bit key and 64-byte
 hash-table entry. Exporters, Python agents, and browser lookup use the mask;
 approximate browser lookups never cross into another new action mask. Legacy
@@ -55,8 +55,9 @@ Native profiling placed about 95% of runtime in postflop feature generation.
 Further hash-table tuning would therefore have little effect on full-game
 throughput. The changes target equity computation:
 
-- C++ shares board rank/suit counts between hero and villain, reuses hero's river
-  score, and looks up straights in an 8 KiB table covering all rank masks.
+- C++ tracks rank multiplicities with bitmasks and extracts high ranks without
+  scanning all 13 ranks. It also shares board rank/suit counts between hero and
+  villain, reuses hero's river score, and looks up straights in an 8 KiB table covering all rank masks.
 - Python estimates equity and both potentials in one sample pass, reuses the
   fixed hero scores, and stores the three results in one bounded joint cache.
   Flop/turn bucketing still uses one pass with caching disabled.
@@ -86,6 +87,40 @@ Timing and RSS depend on hardware, compiler, workload, and machine load. Short
 runs do not measure the maximum memory of a long training job. Python's node
 limit can overshoot by a hand or a multiworker batch; native allocation budgets
 are not operating-system RSS limits.
+
+The action-aware V3 evaluator was additionally benchmarked before/after the
+multiplicity-mask change: three 100,000-hand runs each, seed 7, with exact RNG,
+regrets, average weights, and visit equality. At 100 equity samples, median
+throughput rose from 16,623 to 32,394 hands/s (+94.9%); at 500 samples it rose
+from 3,821 to 7,105 hands/s (+85.9%). All 12,005 Treys differential rankings
+still agree. These speedups preserve the abstraction and sampled outcomes.
+
+The C++ trainer now supports a persistent CPU thread pool with `--workers N`
+(`0` detects all cores). Workers read one frozen shared model per batch, keep
+bounded local deltas, and merge in deterministic task order. The coordinator
+assigns independent RNG seeds before dispatch, so scheduling does not affect
+results. Update memory is partitioned among the workers and merge buffer;
+no complete model is copied per worker. Snapshot boundaries, batch rollback,
+and worker/chunk checkpoint metadata are covered by regressions. V3 files
+remain resumable; V1/V2 cannot resume because their keys lack action masks.
+This is batched MCCFR: serial and parallel trajectories differ, and stronger
+convergence per second still needs playing-strength evaluation.
+
+V4 scaling on this 12-core Mac (8 performance/4 efficiency cores), medians of
+three 100,000-hand runs, seed 7, chunk size 64, including final saves:
+
+| Workers | 100 samples, hands/s | 500 samples, hands/s | Peak RSS at 500 samples |
+|---|---:|---:|---:|
+| 1 | 32,681 | 7,098 | 9.5 MiB |
+| 4 | 98,606 | 25,646 | 11.0 MiB |
+| 8 | 151,490 | 47,223 | 11.9 MiB |
+| 12 | 167,704 | 57,137 | 13.1 MiB |
+
+At 500 samples, 12 workers give 8.0× serial throughput and average 9.2 busy CPU
+cores. At 100 samples the increase is 5.1×; synchronization/merging takes a
+larger share of wall time. Repetitions with identical worker/chunk settings
+produce identical checkpoint hashes. Full model copies are avoided, but these
+short runs do not bound peak memory once every possible node has been reached.
 
 ## Audit of the original saved model
 
@@ -184,26 +219,27 @@ features deterministic. Add a small set of explicit raise sizes with stack-aware
 translation. Assess each change with fixed-deal, seat-swapped matches against
 several baselines, confidence intervals, and exact best-response evaluation on a
 tractable reduced poker game. Compare both equal-hand and equal-time budgets.
-Do that before adding more workers, pruning regrets, or switching regret
-variants: those changes need evidence that they improve convergence per second.
+Use those measurements to judge batching, regret pruning, or other regret
+variants: higher throughput alone does not establish convergence per second.
 
 Start a separate corrected native run:
 
 ```bash
-./cpp/run.sh --iterations 1000000 --samples 100 --memory-mb 256 --output nodesets/cpp/full-v3.bin
+./cpp/run.sh --iterations 1000000 --samples 100 --memory-mb 256 --output nodesets/cpp/full-v4.bin
 ```
 
-Read-only audits support trusted Python pickles and native v1/v2/v3 checkpoints:
+Read-only audits support trusted Python pickles and native v1/v2/v3/v4 checkpoints:
 
 ```bash
 venv/bin/python tools/audit_model.py FULLGAME_10m_iters.pkl --swap-legacy-positions --output artifacts/audit-bundled.json
-venv/bin/python tools/audit_model.py nodesets/cpp/full-v3.bin --output artifacts/audit-native.json
+venv/bin/python tools/audit_model.py nodesets/cpp/full-v4.bin --output artifacts/audit-native.json
 ```
 
-Validation includes Python/native differential and browser policy tests, including 12,005
-Treys evaluator comparisons, 250 PokerKit betting sequences, averaging-phase
+Validation includes 25 Python/native tests and browser policy checks, with
+12,005 Treys evaluator comparisons, 250 PokerKit betting sequences, averaging-phase
 checks, legacy resume guards, checkpoint/resume, memory rollback, and the joint
-sample/cache regression. Native unit checks also pass under AddressSanitizer
-and UndefinedBehaviorSanitizer. Benchmark logs and audit reports remain local
+sample/cache regression. Native serial/parallel unit checks also pass under
+AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer. Benchmark logs
+and audit reports remain local
 under ignored `artifacts/`. Temporary test/benchmark nodesets were subsequently
 removed during cleanup; bundled models remain preserved.

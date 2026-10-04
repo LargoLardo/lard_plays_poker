@@ -39,12 +39,43 @@ remain readable for inspection/export, but cannot resume training, even with
 run with a new output, or export an old checkpoint without rewriting it:
 
 ```bash
-./cpp/run.sh --iterations 1000000 --output nodesets/cpp/full-v3.bin
+./cpp/run.sh --iterations 1000000 --output nodesets/cpp/full-v4.bin
 ./cpp/run.sh --resume nodesets/cpp/old.bin --iterations 0 --export nodesets/cpp/old-web-model
 ```
 
+New saves use `LARDCPP4` to retain worker count and chunk size as well. V3
+checkpoints have compatible keys and can resume; they upgrade to V4 on save.
 The browser and Python agents prefer the matching action mask, with fallback
 to legacy keys for old models. They never use a new node with a different mask.
+
+## Using more CPU cores
+
+`--workers 0` uses all detected CPU cores; choose `--workers 8` to leave more
+CPU capacity available for other work. Serial training remains the default.
+On the development Mac, all cores means 12 workers (8 performance and 4
+efficiency cores):
+
+```bash
+caffeinate -i ./cpp/run.sh --workers 0 --iterations 100000000 --samples 500 \
+  --memory-mb 256 --snapshot-every 1000000 --output nodesets/cpp/full-v4.bin
+./cpp/run.sh --resume nodesets/cpp/full-v4.bin --iterations 100000000 --snapshot-every 1000000
+```
+
+Workers share one immutable node table during each batch and keep bounded local
+updates. A persistent thread pool distributes smaller tasks across cores; the
+coordinator merges results in a fixed order. The default `--chunk-size 64`
+allows up to `workers × 64` hands between merges. Smaller values give fresher
+shared regrets with more synchronization; larger values increase update delay
+and local memory requirements. Batches stop exactly at snapshot milestones and
+the requested hand count. Ctrl+C finishes the batch and saves. If allocation
+or node limits fail, the entire batch and its RNG draws roll back.
+
+V4 checkpoints restore workers/chunk size automatically. Explicit options can
+override them. With the same settings and batch boundaries, repeated and resumed
+runs reproduce node values and RNG state on the same compiler/library build.
+Changing workers, chunk size, or boundaries changes the training trajectory.
+Parallel training reads shared regrets at batch boundaries, so it is a batched
+MCCFR variant; throughput gains do not establish equal convergence per hand.
 
 ## Memory and checkpointing
 
@@ -56,7 +87,7 @@ per player/street in each traversal; no global board cache accumulates over time
 
 `--memory-mb` bounds the node table, its temporary replacement during growth,
 and a reserved per-hand update buffer. The default is 256 MiB. Process runtime,
-executable/library pages, allocator overhead, and small I/O buffers are additional;
+executable/library pages, thread stacks, allocator overhead, and small I/O buffers are additional;
 this is an allocation budget, not an operating-system RSS limit. Use a budget
 comfortably below your available RAM. `--max-nodes N` can impose a lower cap.
 
@@ -69,7 +100,7 @@ requested budget is rejected without overwriting it.
 Checkpoints stream to a temporary file and replace the previous checkpoint
 after a successful close. They save every 60 seconds (`--checkpoint-every N`),
 at completion, at a limit, and after Ctrl+C/SIGTERM. Signals finish the current
-hand before saving. A hard kill or power loss can lose work since the last
+hand (or parallel batch) before saving. A hard kill or power loss can lose work since the last
 successful save; the temporary file is not a resume checkpoint.
 
 ## Keeping models at different training stages
@@ -157,13 +188,28 @@ venv/bin/python -m pip install -r requirements-training.txt
 venv/bin/python -m unittest discover -s tests -v
 ```
 
-On the development Apple Silicon machine with Clang 21, the median of three
-C++ full-game runs of 100,000 hands, 100 equity samples, and seed 7 was **15,419
-hands/second**, including the final checkpoint. Each ended with 33,992 nodes in
-a 4 MiB allocated table; median process peak RSS was 9.5 MiB. Sharing board
-counts, reusing river scores, and an 8 KiB straight lookup improved throughput
-by 16.7% over the corrected trainer before these optimizations, with identical
-RNG state and node weights after 100,000 hands.
+The rank-multiplicity bitmask evaluator improved median serial throughput from
+16,623 to 32,394 hands/s at 100 equity samples (+94.9%), and from 3,821 to 7,105
+hands/s at 500 samples (+85.9%). These matched V3 runs use 100,000 hands, seed 7,
+and three repetitions, including checkpoint saves; every node value and RNG
+state matches before/after. Earlier shared-board/straight-table results are
+recorded in [TRAINING_REVIEW.md](../TRAINING_REVIEW.md).
+
+Parallel V4 measurements on the 12-core development Mac, median of three runs
+of 100,000 hands, seed 7, chunk size 64, including the final checkpoint:
+
+| Workers | 100 samples, hands/s | 500 samples, hands/s | Peak RSS at 500 samples |
+|---|---:|---:|---:|
+| 1 | 32,681 | 7,098 | 9.5 MiB |
+| 4 | 98,606 | 25,646 | 11.0 MiB |
+| 8 | 151,490 | 47,223 | 11.9 MiB |
+| 12 | 167,704 | 57,137 | 13.1 MiB |
+
+Twelve workers provided 5.1× throughput at 100 samples and 8.0× at 500 samples.
+The latter averaged about 9.2 busy cores (920% process CPU); merging and uneven
+task costs leave some idle time. Identical configurations produced identical
+checkpoint hashes on all repetitions. Different worker counts use different
+training trajectories, so these compare wall time per hand, not convergence.
 
 These are local throughput checks. Node growth, compiler, hardware, and machine
 load affect longer runs; the results do not establish convergence or playing

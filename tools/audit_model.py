@@ -21,15 +21,17 @@ RANKS = '23456789TJQKA'
 def cpp_records(source):
     with open(source, 'rb') as stream:
         magic = stream.read(8)
-        if magic not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3'):
+        if magic not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3', b'LARDCPP4'):
             raise ValueError('Unsupported C++ checkpoint')
-        mode, samples, iterations, count, length = struct.unpack('<IIQQI', stream.read(28))
+        mode, samples = struct.unpack('<II', stream.read(8))
+        workers, chunk = struct.unpack('<II', stream.read(8)) if magic == b'LARDCPP4' else (1, 64)
+        iterations, count, length = struct.unpack('<QQI', stream.read(20))
         if length > 20_000:
             raise ValueError('Invalid RNG metadata')
         stream.read(length)
         metadata = dict(format=magic.decode(), mode='preflop' if mode else 'full',
                         samples=samples, iterations=iterations, algorithm=1 if magic == b'LARDCPP1' else 2,
-                        schema=2 if magic == b'LARDCPP3' else 1)
+                        schema=2 if magic in (b'LARDCPP3', b'LARDCPP4') else 1, workers=workers, chunk_size=chunk)
         yield metadata
         # Records stream without constructing a second node store.
         for _ in range(count):

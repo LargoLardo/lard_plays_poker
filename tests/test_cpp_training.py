@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 from pathlib import Path
 import random
 import struct
@@ -25,15 +26,18 @@ def run(*arguments):
 
 def read_checkpoint(path):
     with open(path, 'rb') as stream:
-        if stream.read(8) not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3'):
+        magic = stream.read(8)
+        if magic not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3', b'LARDCPP4'):
             raise ValueError('invalid magic')
-        mode, samples, iterations, count, length = struct.unpack('<IIQQI', stream.read(28))
+        mode, samples = struct.unpack('<II', stream.read(8))
+        workers, chunk = struct.unpack('<II', stream.read(8)) if magic == b'LARDCPP4' else (1, 64)
+        iterations, count, length = struct.unpack('<QQI', stream.read(20))
         rng = stream.read(length)
         nodes = {}
         for _ in range(count):
             key, *values = struct.unpack('<I6dQ', stream.read(60))
             nodes[key] = values
-        return mode, samples, iterations, rng, nodes
+        return mode, samples, iterations, rng, nodes, workers, chunk
 
 
 class CppTrainingTests(unittest.TestCase):
@@ -237,12 +241,13 @@ for (const { game, raiseTo, mask } of JSON.parse(input)) {
                         self.assertEqual(len(key.split('|')), 6)
                         self.assertIn(int(key.split('|')[-1]), (2, 3, 6, 7))
             data = a.read_bytes()
-            mode, samples, iterations, count, length = struct.unpack('<IIQQI', data[8:36])
+            mode, samples, iterations, rng_state, original_nodes, _, _ = read_checkpoint(a)
+            length = len(rng_state)
             key, row = next(iter(read_checkpoint(a)[4].items()))
             for version in (1, 2):
                 legacy = root / f'legacy-{version}.bin'
                 legacy.write_bytes(f'LARDCPP{version}'.encode() +
-                    struct.pack('<IIQQI', mode, samples, iterations, 1, length) + data[36:36 + length] +
+                    struct.pack('<IIQQI', mode, samples, iterations, 1, length) + rng_state +
                     struct.pack('<I6dQ', key & ((1 << 30) - 1), *row))
                 original = legacy.read_bytes()
                 rejected = run('--resume', legacy, '--iterations', 1, '--reset-average')
@@ -251,6 +256,14 @@ for (const { game, raiseTo, mask } of JSON.parse(input)) {
                 exported = run('--resume', legacy, '--iterations', 0, '--export', root / f'legacy-model-{version}')
                 self.assertEqual(exported.returncode, 0, exported.stderr)
                 self.assertEqual(legacy.read_bytes(), original)
+            # V3 has the corrected keys and can continue without resetting weights.
+            v3 = root / 'v3.bin'
+            v3.write_bytes(b'LARDCPP3' + data[8:16] + data[24:])
+            result = run('--resume', v3, '--iterations', 4, '--output', root / 'upgraded.bin')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = run('--resume', a, '--iterations', 4, '--output', root / 'v4-reference.bin')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(root / 'upgraded.bin'), read_checkpoint(root / 'v4-reference.bin'))
             self.assertNotEqual(run('--iterations', 1, '--output', a).returncode, 0)
             self.assertNotEqual(run('--resume', a, '--samples', 11).returncode, 0)
             limited = run('--iterations', 100_000, '--samples', 10, '--memory-mb', 4, '--output', root / 'limit.bin')
@@ -262,6 +275,49 @@ for (const { game, raiseTo, mask } of JSON.parse(input)) {
             root.joinpath('broken.bin').write_bytes(a.read_bytes()[:-4])
             self.assertNotEqual(run('--resume', root / 'broken.bin', '--iterations', 0).returncode, 0)
             self.assertFalse(a.with_suffix('.bin.tmp').exists())
+
+    def test_parallel_resume_snapshots_and_memory_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output, reference = root / 'parallel.bin', root / 'continuous.bin'
+            first = run('--iterations', 24, '--workers', 3, '--chunk-size', 4,
+                        '--samples', 10, '--seed', 9, '--output', output, '--snapshot-every', 12)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            resumed = run('--resume', output, '--iterations', 24, '--snapshot-every', 12)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertIn('3 worker(s)', resumed.stdout)
+            continuous = run('--iterations', 48, '--workers', 3, '--chunk-size', 4,
+                             '--samples', 10, '--seed', 9, '--output', reference)
+            self.assertEqual(continuous.returncode, 0, continuous.stderr)
+            self.assertEqual(read_checkpoint(output), read_checkpoint(reference))
+            self.assertEqual(read_checkpoint(output)[5:], (3, 4))
+            from tools.audit_model import audit
+            metadata = audit(output)['metadata']
+            self.assertEqual((metadata['format'], metadata['schema'], metadata['workers'], metadata['chunk_size']),
+                             ('LARDCPP4', 2, 3, 4))
+            snapshots = root / 'parallel-snapshots'
+            self.assertEqual(sorted(p.name for p in snapshots.iterdir()),
+                             ['iter-12.bin', 'iter-24.bin', 'iter-36.bin', 'iter-48.bin'])
+            self.assertEqual(read_checkpoint(snapshots / 'iter-48.bin'), read_checkpoint(output))
+            clipped = root / 'clipped.bin'
+            result = run('--iterations', 11, '--workers', 3, '--chunk-size', 4,
+                         '--samples', 10, '--snapshot-every', 5, '--output', clipped)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(clipped)[2], 11)
+            for count in (5, 10):
+                self.assertEqual(read_checkpoint(root / 'clipped-snapshots' / f'iter-{count}.bin')[2], count)
+            limited, empty = root / 'limited.bin', root / 'empty.bin'
+            for count, path in ((12, limited), (0, empty)):
+                result = run('--iterations', count, '--workers', 3, '--chunk-size', 4,
+                             '--samples', 10, '--max-nodes', 1, '--output', path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(limited), read_checkpoint(empty), 'failed batch rolls back weights and RNG')
+            self.assertNotEqual(run('--workers', 257, '--iterations', 0).returncode, 0)
+            self.assertNotEqual(run('--chunk-size', 0, '--iterations', 0).returncode, 0)
+            auto = root / 'auto.bin'
+            result = run('--workers', 0, '--iterations', 0, '--output', auto)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(auto)[5], min(256, os.cpu_count() or 1))
 
 
 if __name__ == '__main__':

@@ -194,7 +194,7 @@ def training_main(train):
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output")
     parser.add_argument("--resume")
-    parser.add_argument("--reset-average", action="store_true", help="Explicitly discard legacy averages/visits while retaining regrets")
+    parser.add_argument("--reset-average", action="store_true", help="Discard averages/visits on a compatible resume, retaining regrets")
     args = parser.parse_args()
     train(args.iterations, args.workers, args.chunk_size, output=args.output,
           resume=args.resume, seed=args.seed, samples=args.samples,

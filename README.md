@@ -147,6 +147,8 @@ Directory `nodesets/` is created locally for trained `.pkl` files referenced by 
 
 See [TRAINING_REVIEW.md](TRAINING_REVIEW.md) for the Python/C++ algorithm review,
 model coverage audit, measured optimizations, and remaining abstraction limits.
+The native trainer supports `--workers 0` to use all CPU cores while sharing one
+node table; [CPU options and resume details](cpp/README.md#using-more-cpu-cores).
 Audit a trusted local checkpoint without changing it:
 
 ```bash
