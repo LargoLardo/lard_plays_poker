@@ -32,6 +32,20 @@ let nextHandTimeout = null;
 let nextHandTicker = null;
 let nextHandDeadline = 0;
 let nextHandCancelled = false;
+let tableScene = null;
+
+const sceneHost = $("tableScene");
+sceneHost.addEventListener("scene-unavailable", () => {
+  tableScene = null;
+  $("sceneNotice").classList.remove("hidden");
+});
+import("./table-scene.bundle.js").then(({ createTableScene }) => {
+  tableScene = createTableScene($("tableCanvas"), sceneHost);
+  if (game) tableScene.update(game);
+}).catch((error) => {
+  console.warn("The 3D table could not be started:", error);
+  $("sceneNotice").classList.remove("hidden");
+});
 
 function loadProgress() {
   try {
@@ -237,7 +251,9 @@ function name(player) { return player === game.user ? "You" : "Lard"; }
 function cardMarkup(card, hidden = false) {
   if (hidden) return '<span class="card back" aria-label="Hidden card"></span>';
   const [rank, suit] = card;
-  return `<span class="card ${suit === "h" || suit === "d" ? "red" : ""}" aria-label="${rank} of ${suit}">${rank}<small>${SUIT_GLYPH[suit]}</small></span>`;
+  const suitName = { c: "clubs", d: "diamonds", h: "hearts", s: "spades" }[suit];
+  const rankName = { T: "10", J: "Jack", Q: "Queen", K: "King", A: "Ace" }[rank] || rank;
+  return `<span class="card ${suit === "h" || suit === "d" ? "red" : ""}" aria-label="${rankName} of ${suitName}">${rank === "T" ? "10" : rank}<small>${SUIT_GLYPH[suit]}</small></span>`;
 }
 
 function render() {
@@ -255,6 +271,7 @@ function render() {
   ui.pot.textContent = fmt(game.pot + game.bets[0] + game.bets[1]);
   renderBet(ui.userBet, game.bets[user]); renderBet(ui.agentBet, game.bets[agent]);
   ui.street.textContent = STREET_NAMES[game.street];
+  $("handNumber").textContent = `Hand ${String(handNumber).padStart(2, "0")}`;
   ui.lastAction.textContent = game.lastAction;
   const userTurn = !game.finished && game.actor === user;
   const call = userTurn ? toCall(user) : 0;
@@ -270,8 +287,11 @@ function render() {
   else if (game.finished && nextHandCancelled) ui.nextHandCountdown.textContent = "Auto-deal cancelled.";
   for (const button of [ui.foldButton, ui.callButton, ui.raiseButton]) button.disabled = !userTurn;
   ui.foldButton.disabled = !userTurn || call === 0;
-  ui.callButton.textContent = call ? `Call ${fmt(call).replace(" BB", "")}` : "Check";
+  ui.callButton.querySelector("span").textContent = call ? `Call ${fmt(call).replace(" BB", "")}` : "Check";
+  ui.raiseSlider.disabled = !userTurn;
+  document.querySelectorAll("[data-size]").forEach((button) => { button.disabled = !userTurn; });
   if (userTurn) configureRaise();
+  tableScene?.update(game);
 }
 
 function renderBet(element, amount) {
@@ -559,20 +579,35 @@ ui.newHandButton.addEventListener("click", () => bankroll.some((stack) => stack 
 ui.cancelNextHandButton.addEventListener("click", cancelNextHand);
 ui.newHandTop.addEventListener("click", newHand);
 ui.newGameTop.addEventListener("click", startNewGame);
+document.querySelectorAll(".session-popover button").forEach((button) => button.addEventListener("click", () => { $("sessionMenu").open = false; }));
+document.addEventListener("click", (event) => {
+  if (!$("sessionMenu").contains(event.target)) $("sessionMenu").open = false;
+});
 function activateTab(button) {
   document.querySelectorAll("[data-tab]").forEach((tab) => {
     const selected = tab === button;
     tab.classList.toggle("active", selected);
     tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
   });
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("hidden", panel.id !== button.dataset.tab));
   history.replaceState(null, "", `#${button.dataset.tab}`);
 }
 document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => activateTab(button)));
+document.querySelector(".view-tabs").addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const tabs = [...document.querySelectorAll("[data-tab]")];
+  const index = tabs.indexOf(document.activeElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  activateTab(tabs[next]);
+  tabs[next].focus();
+});
 const linkedTab = document.querySelector(`[data-tab="${location.hash.slice(1)}"]`);
 if (linkedTab) activateTab(linkedTab);
 document.addEventListener("keydown", (event) => {
-  if (event.target.matches("input")) return;
+  if (event.key === "Escape") $("sessionMenu").open = false;
+  if (event.target.matches("input, select, textarea") || $("gameplayPanel").classList.contains("hidden") || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.key.toLowerCase() === "f" && !ui.foldButton.disabled) ui.foldButton.click();
   if (event.key.toLowerCase() === "c" && !ui.callButton.disabled) ui.callButton.click();
   if (event.key.toLowerCase() === "r" && !ui.raiseButton.disabled) ui.raiseButton.click();

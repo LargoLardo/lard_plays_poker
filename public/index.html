@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#071913" />
+    <meta name="theme-color" content="#090b0a" />
     <meta name="description" content="Play heads-up hold'em against a 10-million-iteration MCCFR poker agent." />
     <title>Lard Plays Poker</title>
     <link rel="stylesheet" href="/styles.css" />
@@ -11,27 +11,33 @@
   <body>
     <header class="topbar">
       <a class="brand" href="/" aria-label="Lard Plays Poker home">
-        <span class="brand-mark">LP</span>
-        <span><strong>Lard plays poker</strong><small>MCCFR · 10M iterations</small></span>
+        <span class="brand-mark" aria-hidden="true">♠</span>
+        <span><strong>Lard</strong></span>
       </a>
+      <nav class="view-tabs" role="tablist" aria-label="Application views">
+        <button id="playTab" class="view-tab active" role="tab" aria-selected="true" aria-controls="gameplayPanel" data-tab="gameplayPanel">Play</button>
+        <button id="studyTab" class="view-tab" role="tab" aria-selected="false" aria-controls="strategyPanel" data-tab="strategyPanel" tabindex="-1">Study</button>
+      </nav>
       <div class="top-actions">
-        <span id="modelStatus" class="status"><i></i> Loading strategy</span>
-        <button id="newHandTop" class="button ghost">New hand</button>
-        <button id="newGameTop" class="button ghost danger">New game</button>
+        <details id="sessionMenu" class="session-menu">
+          <summary aria-label="Session settings">•••</summary>
+          <div class="session-popover">
+            <button id="newHandTop" class="button ghost">Deal a new hand</button>
+            <button id="newGameTop" class="button ghost danger">Reset stacks</button>
+            <span id="modelStatus" class="status"><i></i> Loading strategy</span>
+          </div>
+        </details>
       </div>
     </header>
 
     <main>
-      <nav class="view-tabs" role="tablist" aria-label="Application views">
-        <button class="view-tab active" role="tab" aria-selected="true" aria-controls="gameplayPanel" data-tab="gameplayPanel">Gameplay</button>
-        <button class="view-tab" role="tab" aria-selected="false" aria-controls="strategyPanel" data-tab="strategyPanel">Strategy explorer</button>
-      </nav>
-
-      <div id="gameplayPanel" class="tab-panel" role="tabpanel">
-      <section class="table-shell" aria-label="Heads-up poker table">
+      <div id="gameplayPanel" class="tab-panel" role="tabpanel" aria-labelledby="playTab">
+      <section id="tableScene" class="table-shell" aria-label="Heads-up poker table">
+        <canvas id="tableCanvas" aria-hidden="true"></canvas>
+        <span id="handNumber" class="sr-only">Hand 01</span>
+        <p id="sceneNotice" class="scene-notice hidden" role="status">3D is unavailable. You can still play at the table.</p>
         <div class="felt">
           <div id="agentSeat" class="seat opponent-seat">
-            <div class="avatar agent">AI</div>
             <div class="player-copy"><span>Lard</span><strong id="agentStack">100.0 BB</strong></div>
             <span id="agentPosition" class="position">BB</span>
             <div id="agentCards" class="hole-cards" aria-label="Agent cards"></div>
@@ -40,42 +46,41 @@
           <div id="agentBet" class="bet agent-bet hidden"><span class="chip"></span><strong>0</strong></div>
 
           <div class="center-table">
-            <div class="pot-label">POT <strong id="pot">1.5 BB</strong></div>
+            <div id="potLabel" class="pot-label"><span>Pot</span><strong id="pot">1.5 BB</strong></div>
             <div id="board" class="board" aria-label="Community cards"></div>
-            <div id="message" class="message" role="status">Loading the strategy…</div>
           </div>
 
           <div id="userBet" class="bet user-bet hidden"><span class="chip"></span><strong>0</strong></div>
 
-          <div id="userSeat" class="seat user-seat">
-            <div class="avatar you">YOU</div>
-            <div class="player-copy"><span>You</span><strong id="userStack">100.0 BB</strong></div>
-            <span id="userPosition" class="position dealer">SB</span>
-            <div id="userCards" class="hole-cards" aria-label="Your cards"></div>
-          </div>
         </div>
       </section>
 
-      <section class="control-panel">
+      <section class="control-panel" aria-label="Poker actions">
         <div class="hand-meta">
-          <div><span>Street</span><strong id="street">Preflop</strong></div>
-          <div><span>To call</span><strong id="toCall">0.5 BB</strong></div>
-          <div><span>Last action</span><strong id="lastAction">Blinds posted</strong></div>
+          <div id="userSeat" class="seat user-seat">
+            <span class="sr-only">Your stack</span><strong id="userStack">100 BB</strong>
+            <span id="userPosition" class="position dealer">SB</span>
+            <div id="userCards" class="hole-cards" aria-label="Your cards"></div>
+          </div>
+          <strong id="street" class="street">Preflop</strong>
+          <strong id="message" class="message" role="status">Setting the table…</strong>
+          <strong id="lastAction" class="last-action">Blinds posted</strong>
+          <strong id="toCall" class="sr-only">0.5 BB</strong>
         </div>
 
         <div id="actions" class="actions">
-          <button id="foldButton" class="action fold">Fold <kbd>F</kbd></button>
-          <button id="callButton" class="action call">Call 0.5 <kbd>C</kbd></button>
+          <button id="foldButton" class="action fold" aria-keyshortcuts="F"><span>Fold</span></button>
+          <button id="callButton" class="action call" aria-keyshortcuts="C"><span>Call 0.5</span></button>
           <div class="raise-control">
             <div class="raise-row">
               <span>Raise to</span><output id="raiseOutput">3 BB</output>
             </div>
             <input id="raiseSlider" type="range" min="2" max="100" step="0.5" value="3" aria-label="Raise amount" />
             <div class="sizing-buttons">
-              <button data-size="0.5">½ pot</button><button data-size="0.75">¾ pot</button><button data-size="1">Pot</button><button data-size="allin">All-in</button>
+              <button data-size="0.5">½ pot</button><button data-size="1">Pot</button><button data-size="allin">All-in</button>
             </div>
-            <button id="raiseButton" class="action raise">Raise <kbd>R</kbd></button>
           </div>
+          <button id="raiseButton" class="action raise" aria-keyshortcuts="R"><span>Raise</span></button>
         </div>
 
         <div id="finishedActions" class="finished-actions hidden">
@@ -85,18 +90,12 @@
         </div>
       </section>
 
-      <details class="about">
-        <summary>How does the agent play?</summary>
-        <p>Decisions on every street come from the included 10-million-iteration MCCFR strategy. Sparser nodes blend toward poker priors. Check the JS console to see the resolved bucket, model visits, frequencies, and action.</p>
-      </details>
       </div>
 
-      <section id="strategyPanel" class="range-panel tab-panel hidden" role="tabpanel" aria-labelledby="rangeTitle">
+      <section id="strategyPanel" class="range-panel tab-panel hidden" role="tabpanel" aria-labelledby="studyTab">
         <div class="range-header">
           <div>
-            <span class="eyebrow">Strategy explorer</span>
             <h2 id="rangeTitle">Preflop range</h2>
-            <p>Select a decision spot to inspect the trained fold, call, and raise frequencies for every starting hand.</p>
           </div>
         </div>
 

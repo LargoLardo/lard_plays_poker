@@ -2,21 +2,29 @@
 
 ## Play in the browser
 
-The repository includes a dependency-free web table backed by the bundled
-10-million-iteration full-game strategy. Gameplay and the filterable 13x13
-strategy explorer live on separate tabs, and the player's stack persists
-between completed hands in browser storage.
+The browser table places you in a softly lit 3D poker room, with green felt,
+a dark wood rail, and an opponent whose hands emerge from the darkness.
+Cards, bets, and chip stacks follow the bundled 10-million-iteration full-game
+strategy. The filterable 13x13 strategy explorer lives in Study, and the
+player's stack persists between completed hands in browser storage.
+Browsers without WebGL use a playable flat table automatically.
 
 For the quickest local development server, run:
 
 ```bash
-python -m http.server 8000 --directory public
+npm install
+npm run dev
 ```
 
-Then open `http://localhost:8000`. To reproduce Vercel's development routing,
+Then open `http://localhost:8000`. The build bundles Three.js locally, so no
+CDN is needed to load the scene. After `npm run build`, you can also serve
+`public/` with any static server. To reproduce Vercel's development routing,
 run `npx vercel dev` instead. You can also import the repository into Vercel and
 deploy with the default settings. No environment variables or database are
-required.
+required. Run `npm run test:web` for the strategy checks. For the browser
+checks, run `npx playwright install chromium` once, then `npm run test:ui`.
+The browser checks cover betting, every street, showdown, mobile layout,
+the strategy explorer, and the fallback table. Screenshots go to `artifacts/`.
 
 Open the browser developer console while playing to inspect the agent trace.
 Each hand logs an ISO timestamp and Lard's cards; each decision logs its
@@ -79,4 +87,3 @@ My solver solution for Preflop Open after 10 million iterations and approximatel
 
 
 <img width="800" height="800" alt="image" src="https://github.com/user-attachments/assets/cc56bab4-1349-4b92-acd2-f55b8a789f14" />
-
