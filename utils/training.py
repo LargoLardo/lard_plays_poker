@@ -90,7 +90,7 @@ def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
         random.setstate(nodes.rng_state)
     configure_caches(cache_size)
     bucketer = Bucketer(samples)
-    output = output or f"nodesets/{trainer}.pkl"
+    output = output or resume or f"nodesets/{trainer}.pkl"
     if not resume and Path(output).exists():
         raise FileExistsError("Output already exists; use --resume or a new --output")
     saved_at = time.monotonic()

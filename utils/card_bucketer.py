@@ -170,7 +170,7 @@ def flush_draw_completed(prev_board: list[Card], new_board: list[Card]) -> bool:
 
 
 # Ordered once at module level — deuce=0, trey=1, ..., ace=12
-_RANK_ORDER = list(Rank)
+_RANK_ORDER = [Rank(r) for r in "23456789TJQKA"]
 
 def _rank_index(r: Rank) -> int:
     return _RANK_ORDER.index(r)

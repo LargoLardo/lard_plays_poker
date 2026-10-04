@@ -41,13 +41,13 @@ def mccfr(state: State, traverser: int, histories: list[list[str]], base_nodes: 
 
     base_node = base_nodes.get(bucket)
 
-    if bucket not in delta_nodes:
+    if cur_actor == traverser and bucket not in delta_nodes:
         delta_nodes[bucket] = Node()
-    delta_node = delta_nodes[bucket]
+    delta_node = delta_nodes.get(bucket)
 
     def current_regret(action):
         base_val = base_node.regret_sum.get(action, 0.0) if base_node else 0.0
-        delta_val = delta_node.regret_sum.get(action, 0.0)
+        delta_val = delta_node.regret_sum.get(action, 0.0) if delta_node else 0.0
         return base_val + delta_val
 
     def get_current_strategy(actions):

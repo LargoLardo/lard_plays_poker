@@ -34,6 +34,11 @@ class TrainingTests(unittest.TestCase):
         cards.compute_potential(state, 2)
         self.assertFalse(cards._pot_cache)
 
+    def test_straight_draw_rank_order_and_wheel(self):
+        self.assertEqual(cards._max_straight_draw(list(Card.parse('3cAcAdKs'))), 2)
+        self.assertTrue(cards.straight_draw_completed(list(Card.parse('As2d8c')), list(Card.parse('As2d8c3h'))))
+        self.assertTrue(cards.straight_draw_completed(list(Card.parse('AsKd7c')), list(Card.parse('AsKd7cQh'))))
+
     def test_old_dictionary_node_state_loads_into_slots(self):
         node = full.Node.__new__(full.Node)
         node.__setstate__({'regret_sum': {'raise': 3.0}, 'strategy_sum': {'raise': 1.0}, 'times_visited': 7})
@@ -52,9 +57,10 @@ class TrainingTests(unittest.TestCase):
             path = Path(directory) / 'nested' / 'nodes.pkl'
             first = pf.train(3, seed=7, output=path)
             self.assertEqual(first.iterations, 3)
-            resumed = pf.train(2, resume=path, output=path)
+            resumed = pf.train(2, resume=path)
             continuous = pf.train(5, seed=7, output=Path(directory) / 'continuous.pkl')
             self.assertEqual(resumed.iterations, 5)
+            self.assertEqual(load_nodes(path).iterations, 5)
             self.assertEqual(set(resumed), set(continuous))
             for key in resumed:
                 self.assertEqual(resumed[key].regret_sum, continuous[key].regret_sum)

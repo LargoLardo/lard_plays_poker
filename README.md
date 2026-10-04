@@ -71,6 +71,13 @@ Key libraries: `pokerkit`, `numpy`, `torch`, `tqdm`, `networkx`.
 
 ## Running
 
+For a standalone, faster C++ trainer with a configurable memory budget, see
+[cpp/README.md](cpp/README.md). Build and train with one command:
+
+```bash
+./cpp/run.sh --iterations 1000000 --memory-mb 256
+```
+
 | Script | Role |
 |--------|------|
 | `pf_mccfr.py` | Preflop MCCFR training (stops after preflop; payoffs from check-through). |
@@ -107,9 +114,11 @@ can also be resumed. Python resumes preserve accumulated nodes and RNG state,
 but bounded equity caches are recomputed, so full-game resumes need not be
 bit-for-bit identical to uninterrupted runs. Only load trusted pickle files.
 
-New training also samples equity from cards unknown to the acting player, and
-caps raises using the remaining stack plus chips already bet. Existing bundled
-models remain intact. Large node sets and logs are kept **out of Git**.
+New training also samples equity from cards unknown to the acting player,
+uses deuce-through-ace rank order for straight-draw flags, freezes regret
+matching before exploring a node's children, and caps raises using the remaining
+stack plus chips already bet. Existing bundled models remain intact. Large node
+sets and logs are kept **out of Git**.
 
 Directory `nodesets/` is created locally for trained `.pkl` files referenced by the agents.
 
