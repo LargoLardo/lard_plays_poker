@@ -13,7 +13,8 @@ function height(roll, scale) {
 export function dealPose(t, target) {
   const glide = 1 - (1 - t) ** 3;
   const scale = target.board ? 1 + .24 * glide : 1;
-  const roll = target.board ? Math.PI * (1 - smooth(clamp((t - .12) / .76))) : Math.PI;
+  // Turn during the flight, then finish with a low slide onto the felt.
+  const roll = target.board ? Math.PI * (1 - smooth(clamp(t / .56))) : Math.PI;
   return {
     x: DECK.x + (target.x - DECK.x) * glide,
     z: DECK.z + (target.z - DECK.z) * (target.board ? glide : smooth(t)),

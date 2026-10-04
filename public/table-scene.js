@@ -149,9 +149,9 @@ export async function createTableScene(canvas, host) {
     moving.push({ start: performance.now() + delay, duration, sample, done, channel });
   }
   function settleAnimations(includeCards) {
-    for (let i = moving.length - 1; i >= 0; i--) {
+    for (let i = 0; i < moving.length;) {
       const motion = moving[i];
-      if (!includeCards && motion.channel === "cards") continue;
+      if (!includeCards && motion.channel === "cards") { i++; continue; }
       moving.splice(i, 1);
       motion.sample(1); motion.done();
     }
@@ -581,12 +581,15 @@ export async function createTableScene(canvas, host) {
     const desired = cameraPosition();
     camera.position.lerp(desired, reducedMotion.matches ? 1 : 1 - Math.exp(-delta * 8));
     camera.lookAt(0, .05, mobile ? 1.1 : .55);
-    for (let i = moving.length - 1; i >= 0; i--) {
+    // Keep queued deals before their reveals, even when a slow frame or a
+    // reduced-motion change finishes both animations at once.
+    for (let i = 0; i < moving.length;) {
       const entry = moving[i];
-      if (time < entry.start && !reducedMotion.matches) continue;
+      if (time < entry.start && !reducedMotion.matches) { i++; continue; }
       const progress = reducedMotion.matches ? 1 : Math.min(1, (time - entry.start) / entry.duration);
       entry.sample(progress);
       if (progress === 1) { moving.splice(i, 1); entry.done(); }
+      else i++;
     }
     host.dataset.animating = String(moving.length > 0);
     renderer.clear();

@@ -42,6 +42,13 @@ async function assertFits(page) {
 async function screenshot(page, name) {
   await page.screenshot({ path: `artifacts/${name}.png`, fullPage: true });
 }
+async function forceCalls(page) {
+  for (const file of ["preflop-model.json", "postflop-model.json"]) {
+    const nodes = JSON.parse(await readFile(`public/${file}`, "utf8"));
+    for (const key of Object.keys(nodes)) nodes[key] = [0, 1, 0, 50_000];
+    await page.route(`**/${file}`, (route) => route.fulfill({ json: nodes }));
+  }
+}
 
 try {
   // Load the real model first, to catch import and initialization regressions.
@@ -68,11 +75,7 @@ try {
   // Force the trained action mix to check/call so every street is repeatable.
   const page = await pageFor();
   await page.addInitScript(() => { Math.random = () => .5; });
-  for (const file of ["preflop-model.json", "postflop-model.json"]) {
-    const nodes = JSON.parse(await readFile(`public/${file}`, "utf8"));
-    for (const key of Object.keys(nodes)) nodes[key] = [0, 1, 0, 50_000];
-    await page.route(`**/${file}`, (route) => route.fulfill({ json: nodes }));
-  }
+  await forceCalls(page);
   await page.goto(url);
   await page.waitForSelector(".scene-ready");
   await waitForMove(page);
@@ -84,6 +87,7 @@ try {
   await page.waitForTimeout(140);
   await screenshot(page, "table-call-motion");
   await waitForMove(page);
+  let playingTableHeight;
   for (const [street, count] of [["Flop", 3], ["Turn", 4], ["River", 5]]) {
     assert.equal(await page.locator("#street").textContent(), street);
     assert.equal(await page.locator("#board .card").count(), count);
@@ -110,10 +114,12 @@ try {
       await screenshot(page, "table-phone-river");
       await page.setViewportSize({ width: 1440, height: 960 });
     }
+    playingTableHeight = (await page.locator("#tableScene").boundingBox()).height;
     await page.locator("#callButton").click();
     if (street !== "River") await waitForMove(page);
   }
   await page.waitForSelector("#finishedActions:not(.hidden)");
+  assert.equal((await page.locator("#tableScene").boundingBox()).height, playingTableHeight, "Showdown must not resize the table mid-reveal");
   assert.equal(await page.locator("#agentCards .back").count(), 0);
   assert.equal(await page.locator("#tableScene").getAttribute("data-revealed"), "true");
   const stacks = await page.locator("#userStack, #agentStack").allTextContents();
@@ -167,16 +173,54 @@ try {
   assert.equal(await page.locator("#tableScene").getAttribute("data-revealed"), "false");
   await screenshot(page, "table-after-interrupted-fold");
   // Full-stack transfers and the automatic runout must conserve the bankroll.
+  await page.setViewportSize({ width: 320, height: 568 });
+  const phoneTableHeight = (await page.locator("#tableScene").boundingBox()).height;
   await page.locator('[data-size="allin"]').click();
   await page.locator("#raiseButton").click();
   await page.waitForSelector("#finishedActions:not(.hidden)");
   await page.locator("#cancelNextHandButton").click();
   await page.waitForSelector('#tableScene[data-animating="false"]');
+  assert.equal((await page.locator("#tableScene").boundingBox()).height, phoneTableHeight, "Phone controls must keep the scene stable through showdown");
   const allInStacks = await page.locator("#userStack, #agentStack").allTextContents();
   assert.equal(allInStacks.reduce((sum, text) => sum + parseFloat(text), 0), 200);
   assert.equal(await page.locator("#tableScene").getAttribute("data-board-count"), "5");
   await screenshot(page, "table-all-in");
   await page.close();
+
+  // A quick check must not cut a deal short; a new hand must cancel an old reveal.
+  const motion = await pageFor();
+  await motion.clock.install({ time: new Date("2026-10-03T12:00:00Z") });
+  await motion.clock.pauseAt(new Date("2026-10-03T12:00:01Z"));
+  await motion.addInitScript(() => {
+    Math.random = () => .5;
+    localStorage.setItem("lard-plays-poker-progress-v1", JSON.stringify({ handNumber: 1, bankroll: [100, 100] }));
+  });
+  await forceCalls(motion);
+  await motion.goto(url);
+  await motion.waitForSelector(".scene-ready");
+  await motion.clock.runFor(2100);
+  await motion.locator("#callButton").click(); // Check the big blind and deal the flop.
+  await motion.clock.runFor(60);
+  await motion.locator("#callButton").click(); // Check again while those cards are moving.
+  await motion.clock.runFor(760);
+  assert.equal(await motion.locator("#tableScene").getAttribute("data-animating"), "true", "The deal continues after the check gesture finishes");
+  await screenshot(motion, "table-uninterrupted-deal");
+  await motion.clock.runFor(450);
+  assert.equal(await motion.locator("#tableScene").getAttribute("data-animating"), "false", "The original deal finishes on schedule");
+  await motion.clock.runFor(1000);
+  await motion.locator("#callButton").click(); // Turn.
+  await motion.clock.runFor(2100);
+  await motion.locator("#callButton").click(); // River and showdown.
+  await motion.clock.runFor(2250);
+  assert.equal(await motion.locator("#tableScene").getAttribute("data-animating"), "true");
+  await screenshot(motion, "table-reveal-motion");
+  await motion.locator("#cancelNextHandButton").click();
+  await motion.locator("#newHandButton").click();
+  await motion.clock.runFor(1500);
+  assert.equal(await motion.locator("#tableScene").getAttribute("data-board-count"), "0");
+  assert.equal(await motion.locator("#tableScene").getAttribute("data-revealed"), "false");
+  assert.equal(await motion.locator("#tableScene").getAttribute("data-animating"), "false");
+  await motion.close();
 
   // WebGL unavailable and context lost both leave a playable flat table.
   const fallback = await pageFor({ viewport: { width: 390, height: 844 } });
@@ -197,13 +241,18 @@ try {
   await fallback.waitForSelector("#finishedActions:not(.hidden)");
   await fallback.close();
 
-  const contextLoss = await pageFor({ reducedMotion: "reduce" });
+  const contextLoss = await pageFor();
+  await contextLoss.clock.install({ time: new Date("2026-10-03T12:00:00Z") });
+  await contextLoss.clock.pauseAt(new Date("2026-10-03T12:00:01Z"));
   await contextLoss.goto(url);
   await contextLoss.waitForSelector(".scene-ready");
   await waitForMove(contextLoss);
   await contextLoss.locator("#foldButton").click();
   await contextLoss.waitForSelector("#finishedActions:not(.hidden)");
+  await contextLoss.emulateMedia({ reducedMotion: "reduce" });
+  await contextLoss.clock.runFor(30);
   await contextLoss.waitForSelector('#tableScene[data-animating="false"]');
+  await screenshot(contextLoss, "table-reduced-motion-reveal");
   await contextLoss.locator("#cancelNextHandButton").click();
   await contextLoss.locator("#tableCanvas").evaluate((canvas) => canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true })));
   await contextLoss.waitForSelector("#sceneNotice:not(.hidden)");
