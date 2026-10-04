@@ -26,11 +26,30 @@ inline int card(const std::string& text) {
 }
 
 inline int straight(uint32_t mask) {
-    if (mask & (1U << 14)) mask |= 1U << 1;
-    for (int high = 14; high >= 5; --high)
-        if (((mask >> (high - 4)) & 31U) == 31U) return high;
-    return 0;
+    // All 13-rank masks fit in an 8 KiB table; initialize once per process.
+    static const auto table = [] {
+        std::array<uint8_t, 8192> result{};
+        for (uint32_t bits = 0; bits < result.size(); ++bits) {
+            for (int high = 14; high >= 6; --high)
+                if (((bits >> (high - 6)) & 31U) == 31U) { result[bits] = uint8_t(high); break; }
+            if (!result[bits] && (bits & 4111U) == 4111U) result[bits] = 5;
+        }
+        return result;
+    }();
+    return table[(mask >> 2) & 8191U];
 }
+
+struct HandCounts {
+    std::array<uint8_t, 15> ranks{};
+    std::array<uint32_t, 4> suits{};
+    std::array<uint8_t, 4> suit_counts{};
+    uint32_t mask = 0;
+    void add(int card) {
+        int r = card / 4 + 2, s = card % 4;
+        ++ranks[r]; ++suit_counts[s];
+        mask |= 1U << r; suits[s] |= 1U << r;
+    }
+};
 
 inline uint32_t score(int category, const std::array<int, 5>& values) {
     uint32_t result = uint32_t(category);
@@ -39,16 +58,11 @@ inline uint32_t score(int category, const std::array<int, 5>& values) {
 }
 
 // Evaluate 5-7 cards directly from rank counts and suit bitmasks. Higher wins.
-inline uint32_t evaluate(const int* cards, int count) {
-    std::array<int, 15> counts{};
-    std::array<uint32_t, 4> suit_masks{};
-    std::array<int, 4> suit_counts{};
-    uint32_t mask = 0;
-    for (int i = 0; i < count; ++i) {
-        int r = cards[i] / 4 + 2, s = cards[i] % 4;
-        ++counts[r]; ++suit_counts[s];
-        mask |= 1U << r; suit_masks[s] |= 1U << r;
-    }
+inline uint32_t evaluate(const HandCounts& hand) {
+    const auto& counts = hand.ranks;
+    const auto& suit_masks = hand.suits;
+    const auto& suit_counts = hand.suit_counts;
+    uint32_t mask = hand.mask;
     int flush = -1;
     for (int s = 0; s < 4; ++s) if (suit_counts[s] >= 5) {
         int high = straight(suit_masks[s]);
@@ -86,6 +100,12 @@ inline uint32_t evaluate(const int* cards, int count) {
     if (pair_count >= 2) return score(2, {pairs[0], pairs[1], kickers(pairs[0], pairs[1])[0], 0, 0});
     if (pair_count) { auto k = kickers(pairs[0], 0); return score(1, {pairs[0], k[0], k[1], k[2], 0}); }
     return score(0, kickers(0, 0));
+}
+
+inline uint32_t evaluate(const int* cards, int count) {
+    HandCounts hand;
+    for (int i = 0; i < count; ++i) hand.add(cards[i]);
+    return evaluate(hand);
 }
 
 struct History {
@@ -213,10 +233,11 @@ inline int card_bucket(const Cards& cards, int actor, int street, int samples, s
     std::array<int, 52> deck{};
     int available = 0;
     for (int c = 0; c < 52; ++c) if (!known[c]) deck[available++] = c;
-    std::array<int, 7> hero{}, villain{};
-    hero[0] = cards[actor * 2]; hero[1] = cards[actor * 2 + 1];
-    for (int i = 0; i < n; ++i) hero[2 + i] = villain[2 + i] = cards[4 + i];
-    uint32_t hero_now = evaluate(hero.data(), n + 2);
+    HandCounts visible;
+    for (int i = 0; i < n; ++i) visible.add(cards[4 + i]);
+    auto hero_visible = visible;
+    hero_visible.add(cards[actor * 2]); hero_visible.add(cards[actor * 2 + 1]);
+    uint32_t hero_now = evaluate(hero_visible);
     int wins2 = 0, ahead = 0, behind = 0, improve = 0, worsen = 0;
     // Partial Fisher-Yates samples without replacement, restored after each sample.
     std::array<int, 4> swaps{};
@@ -226,12 +247,17 @@ inline int card_bucket(const Cards& cards, int actor, int street, int samples, s
             int j = std::uniform_int_distribution<int>(i, available - 1)(rng);
             swaps[i] = j; std::swap(deck[i], deck[j]);
         }
-        villain[0] = deck[0]; villain[1] = deck[1];
-        for (int i = n; i < 5; ++i) hero[i + 2] = villain[i + 2] = deck[2 + i - n];
-        auto h = evaluate(hero.data(), 7), v = evaluate(villain.data(), 7);
+        auto runout = visible;
+        for (int i = n; i < 5; ++i) runout.add(deck[2 + i - n]);
+        auto hero = runout, villain = runout;
+        hero.add(cards[actor * 2]); hero.add(cards[actor * 2 + 1]);
+        villain.add(deck[0]); villain.add(deck[1]);
+        auto h = street == 3 ? hero_now : evaluate(hero), v = evaluate(villain);
         wins2 += h > v ? 2 : h == v ? 1 : 0;
         if (street < 3) {
-            auto v_now = evaluate(villain.data(), n + 2);
+            auto villain_visible = visible;
+            villain_visible.add(deck[0]); villain_visible.add(deck[1]);
+            auto v_now = evaluate(villain_visible);
             if (hero_now > v_now) { ++ahead; worsen += h < v; }
             if (hero_now < v_now) { ++behind; improve += h > v; }
         }

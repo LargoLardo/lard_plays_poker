@@ -169,8 +169,8 @@ Nash equilibrium for Kuhn Poker:
   J:cb   always fold
   Q:''   always check
   Q:b    call with prob ~1/3
-  Q:cb   call with prob ~2/3
-  K:''   always bet
+  Q:cb   call with prob alpha + 1/3
+  K:''   bet with prob 3 * alpha
   K:b    always call
   K:c    always bet (after checking)
   K:cb   always call

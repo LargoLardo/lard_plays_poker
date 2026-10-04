@@ -3,12 +3,15 @@ import random
 import tempfile
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import full_game_mccfr as full
 import pf_mccfr as pf
 from pokerkit import Card
 from utils import card_bucketer as cards
 from utils.training import TrainingNode, NodeStore, load_nodes, save_nodes
+from tools.audit_model import audit
 
 
 class TrainingTests(unittest.TestCase):
@@ -23,21 +26,38 @@ class TrainingTests(unittest.TestCase):
         opponent = [cards._to_treys(repr(c)) for c in state.hole_cards[1 - state.actor_index]]
         self.assertTrue(all(c in unknown for c in opponent))
         for i in range(5):
-            cards._store(cards._ehs_cache, (i,), i)
-        self.assertEqual(list(cards._ehs_cache), [(3,), (4,)])
+            cards._store(cards._feature_cache, (i,), i)
+        self.assertEqual(list(cards._feature_cache), [(3,), (4,)])
         state.check_or_call()
         state.check_or_call()
         cards.compute_ehs(state, 1)
         cards.compute_ehs(state, 2)
-        self.assertEqual({key[2] for key in cards._ehs_cache}, {1, 2})
+        self.assertEqual({key[2] for key in cards._feature_cache}, {1, 2})
         cards.configure_caches(0)
         cards.compute_potential(state, 2)
-        self.assertFalse(cards._pot_cache)
+        self.assertFalse(cards._feature_cache)
 
     def test_straight_draw_rank_order_and_wheel(self):
         self.assertEqual(cards._max_straight_draw(list(Card.parse('3cAcAdKs'))), 2)
         self.assertTrue(cards.straight_draw_completed(list(Card.parse('As2d8c')), list(Card.parse('As2d8c3h'))))
         self.assertTrue(cards.straight_draw_completed(list(Card.parse('AsKd7c')), list(Card.parse('AsKd7cQh'))))
+
+    def test_joint_equity_potential_uses_one_sample_pass(self):
+        state = SimpleNamespace(actor_index=0,
+                                hole_cards=[list(Card.parse('AhAd')), list(Card.parse('8h9h'))],
+                                board_cards=[[c] for c in Card.parse('2h7dTs')])
+        samples = [[cards._to_treys(c) for c in text.split()] for text in (
+            'Ks Kd Ac 3s', 'Th Tc As Ac', 'Kh Kd Kc 3s', '5s 6s 3d 4d')]
+        cards.configure_caches(2)
+        with patch('utils.card_bucketer.random.sample', side_effect=samples) as sample:
+            self.assertEqual(cards.compute_ehs(state, 4), .5)
+            self.assertEqual(cards.compute_potential(state, 4), (1, 2 / 3))
+            self.assertEqual(sample.call_count, 4)
+        self.assertEqual(len(cards._feature_cache), 1)
+        cards.configure_caches(0)
+        with patch('utils.card_bucketer.random.sample', side_effect=samples) as sample:
+            self.assertEqual(cards.flop_card_bucket(state, 4), (4, 3, 2, 'rainbow', False))
+            self.assertEqual(sample.call_count, 4)
 
     def test_old_dictionary_node_state_loads_into_slots(self):
         node = full.Node.__new__(full.Node)
@@ -108,6 +128,32 @@ class TrainingTests(unittest.TestCase):
             self.assertEqual(reset.algorithm, 2)
             self.assertFalse(reset[bucket].strategy_sum)
             self.assertEqual(reset[bucket].regret_sum['fold'], 100)
+
+    def test_model_audit_reports_sparse_weights_and_unknown_legacy_metadata(self):
+        node = TrainingNode()
+        node.strategy_sum['raise'] = 3
+        node.times_visited = 500
+        nodes = NodeStore({('AAo', 'SB', 'deep', 'root', '~2.0bb raise'): node,
+                           ((1, 0, 0, 'rainbow', False, False, False),
+                            'BB', 'root', 'small', 'short', False): TrainingNode()})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'audit.pkl'
+            save_nodes(nodes, path)
+            original = path.read_bytes()
+            report = audit(path)
+            self.assertIsNone(report['metadata']['iterations'])
+            self.assertIsNone(report['metadata']['samples'])
+            self.assertEqual(report['streets']['turn']['no_average'], 1)
+            self.assertEqual(report['streets']['turn']['under_100'], 1)
+            self.assertEqual(report['streets']['preflop']['under_500'], 0)
+            self.assertEqual(report['sb_root_combo_weighted']['raise'], 1)
+            self.assertEqual(path.read_bytes(), original)
+            nodes.iterations, nodes.samples, nodes.algorithm = 20, 50, 2
+            save_nodes(nodes, path)
+            report = audit(path)
+            self.assertEqual(report['metadata']['iterations'], 20)
+            self.assertEqual(report['metadata']['samples'], 50)
+            self.assertEqual(report['metadata']['algorithm'], 2)
 
     def test_raise_to_includes_existing_bet(self):
         state = full.create_state()

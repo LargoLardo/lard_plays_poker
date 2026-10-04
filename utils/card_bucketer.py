@@ -6,8 +6,7 @@ from treys import Card as TreysCard, Evaluator
 # ── Equity (EHS) and Potential ──────────────────────────────────────────────────────────────
 
 _evaluator = Evaluator()
-_ehs_cache = OrderedDict()
-_pot_cache = OrderedDict()
+_feature_cache = OrderedDict()
 _cache_limit = 10_000
 _DECK = tuple(TreysCard.new(r + suit) for r in "23456789TJQKA" for suit in "shdc")
 
@@ -17,9 +16,7 @@ def configure_caches(max_entries=10_000):
     if max_entries < 0:
         raise ValueError("cache size must be nonnegative")
     _cache_limit = max_entries
-    # Avoid retaining a previous training run's cached samples.
-    _ehs_cache.clear()
-    _pot_cache.clear()
+    _feature_cache.clear()
 
 
 def _store(cache, key, value):
@@ -30,104 +27,67 @@ def _store(cache, key, value):
             cache.popitem(last=False)
 
 
+def _to_treys(card_str: str):
+    return TreysCard.new(card_str[0] + card_str[1].lower())
+
+
 def _equity_inputs(state, n_samples):
     if n_samples < 1:
         raise ValueError("sample count must be positive")
     hero = tuple(sorted(_to_treys(repr(c)) for c in state.hole_cards[state.actor_index] if c is not None))
     board = tuple(sorted(_to_treys(repr(c[0])) for c in state.board_cards))
-    # Unknown opponent cards and burns remain possible: do not leak the deal.
     known = set(hero + board)
-    deck = tuple(c for c in _DECK if c not in known)
-    return hero, board, deck
+    # Opponent cards and burns are unknown to this player and remain possible.
+    return hero, board, tuple(c for c in _DECK if c not in known)
 
 
-def _to_treys(card_str: str):
-    """Convert pokerkit repr like 'Ah' to treys int. e.g. 'Ah' -> treys card int"""
-    return TreysCard.new(card_str[0] + card_str[1].lower())
-
-def compute_ehs(state: State, n_samples: int = 100) -> float:
-    hero_cards, board_cards, deck = _equity_inputs(state, n_samples)
-
-    # Cache in case of repeat board
-    key = (hero_cards, board_cards, n_samples)
-    if key in _ehs_cache:
-        _ehs_cache.move_to_end(key)
-        return _ehs_cache[key]
-
-    cards_to_deal = 5 - len(board_cards)
-    wins = ties = 0
-
+def compute_features(state: State, n_samples=100):
+    """Estimate equity and both potentials from one set of sampled runouts."""
+    hero, board, deck = _equity_inputs(state, n_samples)
+    key = hero, board, n_samples
+    if key in _feature_cache:
+        _feature_cache.move_to_end(key)
+        return _feature_cache[key]
+    draws = 5 - len(board)
+    potential = 3 <= len(board) < 5
+    hero_now = _evaluator.evaluate(board, hero) if len(board) >= 3 else None
+    wins = ties = ahead = behind = improve = worsen = 0
     for _ in range(n_samples):
-        sample     = random.sample(deck, 2 + cards_to_deal)
-        vil_cards  = tuple(sample[:2])
-        runout     = board_cards + tuple(sample[2:])
-
-        hero_score = _evaluator.evaluate(runout, hero_cards)
-        vil_score  = _evaluator.evaluate(runout, vil_cards)
-
-        if hero_score < vil_score:    # lower = better in treys
-            wins += 1
-        elif hero_score == vil_score:
-            ties += 1
-
-    result = (wins + 0.5 * ties) / n_samples
-
-    _store(_ehs_cache, key, result)
+        sample = random.sample(deck, 2 + draws)
+        villain = tuple(sample[:2])
+        runout = board + tuple(sample[2:])
+        # Hero's river hand never changes across samples.
+        hero_final = hero_now if not draws else _evaluator.evaluate(runout, hero)
+        villain_final = _evaluator.evaluate(runout, villain)
+        wins += hero_final < villain_final
+        ties += hero_final == villain_final
+        if potential:
+            villain_now = _evaluator.evaluate(board, villain)
+            if hero_now < villain_now:
+                ahead += 1
+                worsen += hero_final > villain_final
+            elif hero_now > villain_now:
+                behind += 1
+                improve += hero_final < villain_final
+    result = ((wins + .5 * ties) / n_samples,
+              improve / behind if behind else 0.0,
+              worsen / ahead if ahead else 0.0)
+    _store(_feature_cache, key, result)
     return result
 
 
-def compute_potential(state: State, n_samples: int = 100) -> tuple[float, float]:
-    hero_cards, board_cards, deck = _equity_inputs(state, n_samples)
-
-    # Cache in case of repeat board
-    key = (hero_cards, board_cards, n_samples)
-    if key in _pot_cache:
-        _pot_cache.move_to_end(key)
-        return _pot_cache[key]
-
-    cards_to_deal = 5 - len(board_cards)
-
-    ahead_now_behind_later = 0
-    behind_now_ahead_later = 0
-    ahead_now_total  = 0
-    behind_now_total = 0
-
-    hero_now = _evaluator.evaluate(board_cards, hero_cards)
-    for _ in range(n_samples):
-        sample    = random.sample(deck, 2 + cards_to_deal)
-        vil_cards = tuple(sample[:2])
-        runout    = board_cards + tuple(sample[2:])
-
-        vil_now  = _evaluator.evaluate(board_cards, vil_cards)
-
-        hero_final = _evaluator.evaluate(runout, hero_cards)
-        vil_final  = _evaluator.evaluate(runout, vil_cards)
-
-        currently_ahead  = hero_now < vil_now   # lower = better
-        currently_behind = hero_now > vil_now
-
-        if currently_ahead:
-            ahead_now_total += 1
-            if hero_final > vil_final:          # was ahead, now behind
-                ahead_now_behind_later += 1
-
-        if currently_behind:
-            behind_now_total += 1
-            if hero_final < vil_final:          # was behind, now ahead
-                behind_now_ahead_later += 1
-
-    ppot = behind_now_ahead_later / behind_now_total if behind_now_total > 0 else 0.0
-    npot = ahead_now_behind_later / ahead_now_total  if ahead_now_total  > 0 else 0.0
-    result = ppot, npot
-    
-    _store(_pot_cache, key, result)
-    return result
+def compute_ehs(state: State, n_samples=100):
+    return compute_features(state, n_samples)[0]
 
 
-def compute_ehs2(state: State, n_samples=1000) -> float: 
-    """Combined EHS + potential metric. Better single feature than EHS alone."""
-    ehs = compute_ehs(state, n_samples)
-    ppot, npot = compute_potential(state, n_samples)
+def compute_potential(state: State, n_samples=100):
+    if len(state.board_cards) < 3:
+        raise ValueError("Potential requires at least three board cards")
+    return compute_features(state, n_samples)[1:]
+
+
+def compute_ehs2(state: State, n_samples=1000):
+    ehs, ppot, npot = compute_features(state, n_samples)
     return ehs + (1 - ehs) * ppot - ehs * npot
 
 
@@ -308,8 +268,7 @@ def flop_card_bucket(
 ) -> tuple:
     assert len(state.board_cards) == 3
 
-    ehs = compute_ehs(state, n_samples)
-    ppot, npot = compute_potential(state, n_samples)
+    ehs, ppot, npot = compute_features(state, n_samples)
 
     # ehs2_bucket = equity_bucket(compute_ehs2(state, 200), 16)
 
@@ -337,8 +296,7 @@ def turn_card_bucket(
     n_samples: int = 500
 ) -> tuple:
     assert len(state.board_cards) == 4
-    ehs = compute_ehs(state, n_samples)
-    ppot, npot = compute_potential(state, n_samples)
+    ehs, ppot, npot = compute_features(state, n_samples)
     board = [card[0] for card in state.board_cards]
     flop = [state.board_cards[i][0] for i in range(3)]
 

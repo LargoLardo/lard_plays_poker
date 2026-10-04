@@ -163,7 +163,7 @@ def training_main(train):
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--chunk-size", type=int, default=1000)
     parser.add_argument("--samples", type=int, default=100)
-    parser.add_argument("--cache-size", type=int, default=10_000, help="Maximum entries in each equity cache; 0 disables")
+    parser.add_argument("--cache-size", type=int, default=10_000, help="Maximum joint equity/potential cache entries; 0 disables")
     parser.add_argument("--max-nodes", type=int, default=200_000)
     parser.add_argument("--checkpoint-every", type=float, default=60, help="Seconds between atomic saves")
     parser.add_argument("--seed", type=int, default=1)
