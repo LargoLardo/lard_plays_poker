@@ -266,7 +266,7 @@ venv/bin/python tools/audit_model.py FULLGAME_10m_iters.pkl --swap-legacy-positi
 venv/bin/python tools/audit_model.py nodesets/cpp/full-v4.bin --output artifacts/audit-native.json
 ```
 
-Validation includes 28 Python/native tests and browser policy checks, with
+Validation includes 31 Python/native tests and browser policy checks, with
 12,005 Treys evaluator comparisons, 250 PokerKit betting sequences, averaging-phase
 checks, legacy resume guards, checkpoint/resume, memory rollback, and the joint
 sample/cache regression. Native serial/parallel unit checks also pass under

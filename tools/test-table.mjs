@@ -83,11 +83,28 @@ try {
   for (const nodes of [raisedPreflop, raisedPostflop]) for (const key of Object.keys(nodes)) nodes[key] = [0, 0, 1, 50_000];
   await switching.route("**/api/nodesets", (route) => route.fulfill({ json:[
     { id:"raising", label:"Test raising", preflop:"/raising-pre.json", postflop:"/raising-post.json" },
+    { id:"sparse", label:"Test sparse", preflop:"/sparse-pre.json", postflop:"/raising-post.json" },
     { id:"broken", label:"Unavailable", preflop:"/raising-pre.json", postflop:"/missing-post.json" },
   ] }));
   await switching.route("**/raising-pre.json", (route) => route.fulfill({ json:raisedPreflop }));
   await switching.route("**/raising-post.json", (route) => route.fulfill({ json:raisedPostflop }));
   await switching.route("**/missing-post.json", (route) => route.fulfill({ status:500 }));
+  await switching.route("**/sparse-pre.json", (route) => route.fulfill({ json:{
+    "AKo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 999],
+    "AAo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 1000],
+    "KKo|SB|deep|root|~2.0bb raise|3":[1, 0, 0, 600],
+    "KKo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 600],
+    "QQo|SB|deep|root|~2.0bb raise|3":[1, 0, 0, 999],
+    "QQo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 1000],
+    "22o|SB|deep|root|~2.0bb raise":[0, 1, 0, 999],
+    "33o|SB|deep|root|~2.0bb raise":[0, 1, 0, 1000],
+  } }));
+  let arenaRequest;
+  await switching.route("**/api/arena", (route) => {
+    arenaRequest = JSON.parse(route.request().postData());
+    const agent = { net_bb:0, bb_per_100:0, ci95_bb_per_100:[-1, 1], wins:10, losses:10, ties:0, coverage:{ decisions:100, trained:90 } };
+    return route.fulfill({ json:{ hands:20, duplicate_pairs:10, samples:3, elapsed_seconds:.01, a:agent, b:agent } });
+  });
   await switching.goto(url);
   await switching.waitForSelector("#modelStatus.ready", { state:"attached" });
   await switching.locator("#sessionMenu summary").click();
@@ -102,6 +119,20 @@ try {
   assert.equal(await switching.locator("#nodesetSelect").inputValue(), "raising");
   assert.equal(await switching.locator("#rangeRaise").textContent(), "100.0%");
   assert.match(await switching.locator("#modelStatus").textContent(), /Still using Test raising/);
+  await switching.selectOption("#nodesetSelect", "sparse");
+  await switching.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  for (const hand of ["AKo", "KK", "22"]) {
+    const cell = switching.locator(`#rangeGrid [aria-label^="${hand} "]`);
+    assert.equal(await cell.isDisabled(), true, `${hand} is below 1,000 visits per node`);
+    assert.match(await cell.getAttribute("class"), /sparse/);
+    assert.equal(await cell.locator("small").textContent(), "—");
+  }
+  for (const hand of ["AA", "QQ", "33"]) {
+    assert.equal(await switching.locator(`#rangeGrid [aria-label^="${hand} "]`).isDisabled(), false, "Exactly 1,000 visits is visible");
+  }
+  assert.match(await switching.locator('#rangeGrid [aria-label^="QQ "]').getAttribute("aria-label"), /Raise 100.0%/, "Sparse masks are excluded before aggregation");
+  await switching.selectOption("#nodesetSelect", "raising");
+  await switching.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
   await switching.locator("#playTab").click();
   await switching.locator("#callButton").click();
   await switching.clock.runFor(4100);
@@ -118,6 +149,18 @@ try {
   await switching.locator("#sessionMenu summary").click();
   const picker = await switching.locator("#nodesetSelect").boundingBox();
   assert.ok(picker.x >= 0 && picker.x + picker.width <= 320, "The selector fits on a phone");
+  await switching.locator("#arenaTab").click();
+  await switching.selectOption("#arenaA", "raising");
+  await switching.selectOption("#arenaB", "sparse");
+  await switching.locator("#arenaHands").fill("20");
+  await switching.locator("#arenaSeed").fill("9");
+  await switching.locator("#arenaRun").click();
+  await switching.waitForSelector("#arenaResult tbody tr");
+  assert.deepEqual(arenaRequest, { a:"raising", b:"sparse", hands:20, seed:9 });
+  assert.equal(await switching.locator("#arenaResult tbody tr").count(), 2);
+  assert.match(await switching.locator("#arenaStatus").textContent(), /No clear winner/);
+  assert.equal(await switching.locator("#arenaRun").isDisabled(), false);
+  assert.ok(await switching.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Arena fits on a phone");
   await switching.close();
 
   // Force the trained action mix to check/call so every street is repeatable.

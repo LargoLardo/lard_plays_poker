@@ -59,6 +59,7 @@ class NodesetServer(ThreadingHTTPServer):
     def __init__(self, address, *, nodesets=ROOT / 'nodesets', cache=ROOT / 'artifacts/web-models'):
         self.nodesets, self.cache = Path(nodesets).resolve(), Path(cache).resolve()
         self.export_lock = threading.Lock()
+        self.arena_lock = threading.Lock()
         super().__init__(address, Handler)
 
     def export(self, key):
@@ -126,8 +127,54 @@ class Handler(SimpleHTTPRequestHandler):
             print(f'Nodeset export failed: {error}', file=sys.stderr)
             self.send_error(500, 'Could not export this nodeset. Check the server terminal.')
 
-    def send_bytes(self, contents, content_type):
-        self.send_response(200)
+    def do_POST(self):
+        if urlsplit(self.path).path != '/api/arena':
+            self.send_error(404)
+            return
+        locked = False
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 4096:
+                raise ValueError('Invalid arena request size')
+            request = json.loads(self.rfile.read(length))
+            if not isinstance(request, dict):
+                raise ValueError('Invalid arena request')
+            hands, seed = request.get('hands', 10_000), request.get('seed', 1)
+            if type(hands) is not int or not 2 <= hands <= 1_000_000 or hands % 2:
+                raise ValueError('Choose an even hand count between 2 and 1,000,000')
+            if type(seed) is not int or not 0 <= seed <= 2**32 - 1:
+                raise ValueError('Seed must be 0..4294967295')
+            sources = {item['id']: item['source'] for item in checkpoints(self.server.nodesets)}
+            sources['bundled'] = ROOT / 'FULLGAME_10m_iters.pkl'
+            selected = [sources.get(request.get(label)) for label in ('a', 'b')]
+            if any(path is None for path in selected):
+                raise ValueError('Checkpoint was removed; refresh the page and choose again')
+            locked = self.server.arena_lock.acquire(blocking=False)
+            if not locked:
+                self.send_bytes(json.dumps({'error': 'An arena match is already running.'}).encode(), 'application/json', 409)
+                return
+            venv_python = ROOT / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+            python = str(venv_python) if venv_python.exists() else sys.executable
+            command = [python, str(ROOT / 'agent_arena.py'), *map(str, selected),
+                       '--hands', str(hands), '--seed', str(seed)]
+            for label, path in zip(('a', 'b'), selected):
+                if path == ROOT / 'FULLGAME_10m_iters.pkl':
+                    command.append(f'--swap-{label}-legacy-positions')
+            result = subprocess.run(command, check=True, capture_output=True)
+            self.send_bytes(result.stdout, 'application/json')
+        except (ValueError, TypeError) as error:
+            self.send_bytes(json.dumps({'error': str(error)}).encode(), 'application/json', 400)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except (OSError, subprocess.CalledProcessError) as error:
+            print(f'Arena failed: {error}', file=sys.stderr)
+            self.send_bytes(json.dumps({'error': 'Arena failed. Check the server terminal.'}).encode(), 'application/json', 500)
+        finally:
+            if locked:
+                self.server.arena_lock.release()
+
+    def send_bytes(self, contents, content_type, status=200):
+        self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(contents)))
         self.send_header('Cache-Control', 'no-store')

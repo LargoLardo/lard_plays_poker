@@ -130,13 +130,24 @@ main { margin: 0 auto; }
 .range-summary { padding:16px; border:1px solid var(--line); border-radius:10px; background:#091510; }.frequency-row { display:flex; justify-content:space-between; align-items:center; margin-top:14px; font-size:11px; }.frequency-row span { color:#c8d4cf; }.frequency-row strong { font:500 11px DM Mono; }.frequency-bar { display:flex; overflow:hidden; height:7px; margin-top:16px; border-radius:5px; background:#16231e; }.frequency-bar i { height:100%; }.frequency-bar i:nth-child(1) { background:#4d90c7; }.frequency-bar i:nth-child(2) { background:#4dc78e; }.frequency-bar i:nth-child(3) { background:#d75f61; }.range-summary p { margin:16px 0 0; color:var(--muted); font-size:10px; line-height:1.55; }
 
 .range-panel { width: min(1040px, 90%); margin: 84px auto 40px; background: #111812; }
+.arena-form { display: grid; grid-template-columns: 2fr 2fr 1fr 1fr auto; align-items: end; gap: 12px; }
+.arena-form label { min-width: 0; display: grid; gap: 7px; }
+.arena-form label span, .arena-note { color: var(--muted); font-size: 11px; }
+.arena-form select, .arena-form input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); background: var(--bg); font: 11px var(--mono); }
+.arena-note { margin: 20px 0 12px; line-height: 1.6; }
+.arena-status { color: var(--gold); font-size: 12px; line-height: 1.6; }
+.arena-result { overflow-x: auto; }
+.arena-result table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.arena-result th, .arena-result td { padding: 12px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.arena-result th { font-weight: 400; color: var(--muted); }
+.arena-result td:not(:first-child) { font-family: var(--mono); white-space: nowrap; }
 @media (max-width: 700px) {
   .topbar { height: 56px; padding: 0 20px; }
   .brand strong { font-size: 19px; }
 
   .brand { gap: 7px; }
   .brand-mark { font-size: 23px; }
-  .view-tabs { gap: 24px; }
+  .view-tabs { gap: 16px; }
   .view-tab { font-size: 11px; }
   .felt { inset: 75px 3% 65px; border-width: 12px; border-radius: 35%; }
   .opponent-seat { gap: 7px; padding: 8px 10px; }
@@ -165,6 +176,8 @@ main { margin: 0 auto; }
   .finished-actions { flex-wrap: wrap; }
   .finished-copy { width: 100%; margin: 6px 0 0; }
   .range-panel { padding: 18px 14px; }
+  .arena-form { grid-template-columns: 1fr 1fr; }
+  .arena-form .button { grid-column: 1 / -1; }
   .range-header { display: block; }
   .spot-filters { grid-template-columns: 1fr 1fr; }
   .range-content { grid-template-columns: 1fr; }

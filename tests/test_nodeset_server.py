@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from cpp.run import build
 import pf_mccfr
@@ -48,6 +48,19 @@ class NodesetServerTests(unittest.TestCase):
                         stamp = exported.stat().st_mtime_ns
                         self.assertEqual(get(item['preflop']), preflop)
                         self.assertEqual(exported.stat().st_mtime_ns, stamp, 'Reuse the selected export')
+                    request = Request(address + '/api/arena', method='POST',
+                                      data=json.dumps({'a': items[0]['id'], 'b': items[1]['id'], 'hands': 20, 'seed': 9}).encode(),
+                                      headers={'Content-Type': 'application/json'})
+                    with urlopen(request, timeout=20) as response:
+                        match = json.load(response)
+                    self.assertEqual(match['hands'], 20)
+                    self.assertEqual(match['a']['net_bb'], -match['b']['net_bb'])
+                    for bad in ({'a': '../anything', 'b': 'bundled', 'hands': 20},
+                                {'a': items[0]['id'], 'b': items[1]['id'], 'hands': 3}):
+                        request.data = json.dumps(bad).encode()
+                        with self.assertRaises(HTTPError) as failed:
+                            urlopen(request, timeout=20)
+                        self.assertEqual(failed.exception.code, 400)
                     with self.assertRaises(HTTPError) as failed:
                         get('/api/nodesets/../../FULLGAME_10m_iters.pkl')
                     self.assertEqual(failed.exception.code, 404)

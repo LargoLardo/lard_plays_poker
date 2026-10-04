@@ -41,6 +41,34 @@ page to discover newly saved checkpoints. The local server exports only the
 chosen checkpoint and caches its JSON under `artifacts/web-models/`; it reads
 the training files without changing them.
 
+Study greys out nodes with fewer than **1,000 visits**. A mixed-context hand cell
+includes only nodes meeting that threshold, and the frequency summary excludes
+sparse nodes too. This affects Study display only.
+
+The **Arena** tab compares two checkpoints using duplicate deals: each deal is
+played twice with the agents swapping seats, starting with 100 BB each. It shows
+net BB, BB/100, an approximate 95% interval based on duplicate pairs, wins/losses/
+ties, and trained-node coverage. It uses the saved average strategies directly.
+Missing or unaveraged nodes use uniform legal actions; preflop-only agents
+check/call later streets. The bundled legacy model gets its seat correction
+automatically. Arena runs through the same local server.
+
+For a standalone match and a saved report, use the new `agent_arena.py`:
+
+```bash
+python agent_arena.py nodesets/cpp/full-v4.bin nodesets/cpp/full-v4-snapshots/iter-100000000.bin --hands 100000 --seed 1 --output artifacts/arena/latest-vs-100m.json
+```
+
+Both `.bin` and `.pkl` checkpoints are supported. The native engine runs the
+match; Python policies are converted in a temporary directory. Inputs stay
+unchanged. Hand counts must be even. `--samples 0` (default) uses the larger
+recorded sample count, with 100 assumed for legacy Python files lacking metadata.
+Use `--fallback call` for check/call fallback instead. To compare the original
+`FULLGAME_10m_iters.pkl`, add `--swap-a-legacy-positions` or
+`--swap-b-legacy-positions` according to its argument position. Ctrl+C finishes
+the current duplicate pair and returns a partial report. These results measure
+the selected matchup and evaluation settings.
+
 If the scene is already built, start the same frontend directly with
 `venv/bin/python tools/serve.py` (Windows: `py -3 tools/serve.py`). C++ selections
 need the same C++17 compiler as training; Python selections need the training
@@ -98,6 +126,7 @@ For a standalone, faster C++ trainer with a configurable memory budget, see
 | `full_game_mccfr.py` | Full-game MCCFR training through showdown. |
 | `utils/play_hand.py` | Interactive / scripted play against a loaded strategy |
 | `utils/agent_test.py` | Local agent testing harness (paths/iterations are edited in-file). |
+| `agent_arena.py` | C++/Python checkpoint matches with duplicate deals and JSON results. |
 | `visualizers/*.py` | Preflop range visualization helpers. |
 | `kuhn/*.py` | Small Kuhn poker CFR / MCCFR reference implementations. |
 | `protos/*.py` | Earlier or alternate prototypes (Hold’em setup, random sims, CFR variants). |

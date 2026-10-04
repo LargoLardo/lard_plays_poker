@@ -10,6 +10,7 @@ const DISPLAY_RANKS = [...RANKS].reverse();
 const AGENT_DELAY_MS = 2_000;
 const NEXT_HAND_DELAY_MS = 8_000;
 const SPARSE_NODE_THRESHOLD = 1_500;
+const STUDY_MIN_VISITS = 1_000;
 
 const $ = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
@@ -18,6 +19,7 @@ const ui = Object.fromEntries([
   "foldButton", "callButton", "raiseButton", "raiseSlider", "raiseOutput", "finishedActions", "newHandButton", "cancelNextHandButton",
   "newHandTop", "newGameTop", "resultDetail", "nextHandCountdown", "rangePosition", "rangeHistory", "rangeStack", "rangeSize", "rangeGrid", "rangeFold", "rangeCall", "rangeRaise",
   "foldBar", "callBar", "raiseBar", "rangeDetail", "spotCoverage",
+  "arenaForm", "arenaA", "arenaB", "arenaHands", "arenaSeed", "arenaRun", "arenaStatus", "arenaResult",
 ].map((id) => [id, $(id)]));
 
 let model = {};
@@ -443,12 +445,16 @@ function renderRange() {
   for (const row of DISPLAY_RANKS) for (const column of DISPLAY_RANKS) {
     const hand = rangeHand(row, column);
     const baseKey = `${hand.key}|${spot}`;
-    const rows = availableMasks.map((mask) => model[`${baseKey}|${mask}`]).filter(Boolean);
+    const rawRows = availableMasks.map((mask) => model[`${baseKey}|${mask}`]).filter(Boolean);
+    const rows = rawRows.filter((row) => row[3] >= STUDY_MIN_VISITS);
     // Range display aggregates contexts; actual decisions always match one mask.
     const visits = rows.reduce((sum, row) => sum + row[3], 0);
-    const node = model[baseKey] || (visits ? [0, 1, 2].map((a) => rows.reduce((sum, row) => sum + row[a] * row[3], 0) / visits).concat(visits) : null);
+    const legacy = model[baseKey];
+    const node = (legacy?.[3] >= STUDY_MIN_VISITS ? legacy : null) || (visits ? [0, 1, 2].map((a) => rows.reduce((sum, row) => sum + row[a] * row[3], 0) / visits).concat(visits) : null);
     if (!node) {
-      cells.push(`<button class="range-cell missing" disabled><strong>${hand.label}</strong><small>—</small></button>`);
+      const sparse = legacy || rawRows.length;
+      const title = sparse ? `${hand.label} — Sparse: fewer than 1,000 visits per node` : `${hand.label} — Untrained`;
+      cells.push(`<button class="range-cell missing${sparse ? " sparse" : ""}" disabled title="${title}" aria-label="${title}"><strong>${hand.label}</strong><small>—</small></button>`);
       continue;
     }
     const frequencies = node.slice(0, 3);
@@ -581,6 +587,43 @@ ui.cancelNextHandButton.addEventListener("click", cancelNextHand);
 ui.newHandTop.addEventListener("click", newHand);
 ui.newGameTop.addEventListener("click", startNewGame);
 ui.nodesetSelect.addEventListener("change", () => loadNodeset(ui.nodesetSelect.value));
+ui.arenaForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (ui.arenaRun.disabled) return;
+  const selected = [ui.arenaA, ui.arenaB].map((select) => ({ id:select.value, label:select.selectedOptions[0].textContent }));
+  ui.arenaRun.disabled = true;
+  ui.arenaResult.replaceChildren();
+  ui.arenaStatus.textContent = "Running duplicate deals…";
+  try {
+    const response = await fetch("/api/arena", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ a:selected[0].id, b:selected[1].id, hands:Number(ui.arenaHands.value), seed:Number(ui.arenaSeed.value) }),
+    });
+    const report = await response.json();
+    if (!response.ok) throw new Error(report.error || "Match failed");
+    ui.arenaResult.innerHTML = '<table><thead><tr><th>Checkpoint</th><th>Net BB</th><th>BB/100 · 95% interval</th><th>Wins / losses / ties</th><th>Trained decisions</th></tr></thead><tbody></tbody></table>';
+    [report.a, report.b].forEach((agent, index) => {
+      const row = document.createElement("tr");
+      const interval = agent.ci95_bb_per_100?.map((number) => number.toFixed(2)).join(" to ") || "not enough pairs";
+      const c = agent.coverage;
+      for (const value of [selected[index].label, agent.net_bb.toFixed(2), `${agent.bb_per_100.toFixed(2)} (${interval})`,
+        `${agent.wins.toLocaleString()} / ${agent.losses.toLocaleString()} / ${agent.ties.toLocaleString()}`,
+        `${c.trained.toLocaleString()} / ${c.decisions.toLocaleString()}`]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.append(cell);
+      }
+      ui.arenaResult.querySelector("tbody").append(row);
+    });
+    const interval = report.a.ci95_bb_per_100;
+    const conclusion = !interval ? "Run more pairs for an interval." : interval[0] > 0 ? "A leads in this match." : interval[1] < 0 ? "B leads in this match." : "No clear winner at 95% confidence.";
+    ui.arenaStatus.textContent = `${report.hands.toLocaleString()} hands · ${report.duplicate_pairs.toLocaleString()} duplicate deals · ${report.samples} equity samples · ${report.elapsed_seconds.toFixed(2)}s. ${conclusion}`;
+  } catch (error) {
+    ui.arenaStatus.textContent = error.message;
+  } finally {
+    ui.arenaRun.disabled = false;
+  }
+});
 [ui.rangePosition, ui.rangeStack, ui.rangeHistory, ui.rangeSize].forEach((filter, index) => filter.addEventListener("change", () => {
   populateRangeFilters(index + 1);
   renderRange();
@@ -672,9 +715,19 @@ async function loadNodeset(id) {
 
 try {
   const response = await fetch("/api/nodesets", { cache:"no-store" });
-  if (response.ok) nodesets.push(...await response.json());
+  if (response.ok) {
+    nodesets.push(...await response.json());
+    ui.arenaRun.disabled = false;
+    ui.arenaStatus.textContent = "Choose two checkpoints to compare.";
+  }
 } catch (_) { /* Static hosting still offers the bundled model. */ }
 ui.nodesetSelect.replaceChildren(...nodesets.map((item) => new Option(item.label, item.id)));
+for (const select of [ui.arenaA, ui.arenaB]) select.replaceChildren(...nodesets.map((item) => new Option(item.label, item.id)));
+const latest = nodesets[1];
+if (latest) {
+  ui.arenaA.value = latest.id;
+  ui.arenaB.value = nodesets.find((item) => item.id !== latest.id && item.iterations && item.iterations !== latest.iterations)?.id || "bundled";
+}
 ui.nodesetSelect.disabled = nodesets.length < 2;
 let selectedId = "bundled";
 try { selectedId = localStorage.getItem(NODESET_STORAGE_KEY) || selectedId; } catch (_) { /* Use the bundled default. */ }

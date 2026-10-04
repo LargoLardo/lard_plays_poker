@@ -17,6 +17,7 @@
       <nav class="view-tabs" role="tablist" aria-label="Application views">
         <button id="playTab" class="view-tab active" role="tab" aria-selected="true" aria-controls="gameplayPanel" data-tab="gameplayPanel">Play</button>
         <button id="studyTab" class="view-tab" role="tab" aria-selected="false" aria-controls="strategyPanel" data-tab="strategyPanel" tabindex="-1">Study</button>
+        <button id="arenaTab" class="view-tab" role="tab" aria-selected="false" aria-controls="arenaPanel" data-tab="arenaPanel" tabindex="-1">Arena</button>
       </nav>
       <div class="top-actions">
         <details id="sessionMenu" class="session-menu">
@@ -128,6 +129,18 @@
             <p id="rangeDetail" aria-live="polite">Hover or tap a hand to see its exact action mix.</p>
           </aside>
         </div>
+      </section>
+      <section id="arenaPanel" class="range-panel tab-panel hidden" role="tabpanel" aria-labelledby="arenaTab">
+        <form id="arenaForm" class="arena-form">
+          <label><span>Checkpoint A</span><select id="arenaA" required></select></label>
+          <label><span>Checkpoint B</span><select id="arenaB" required></select></label>
+          <label><span>Hands</span><input id="arenaHands" type="number" min="2" max="1000000" step="2" value="10000" required /></label>
+          <label><span>Seed</span><input id="arenaSeed" type="number" min="0" max="4294967295" step="1" value="1" required /></label>
+          <button id="arenaRun" class="button primary" type="submit" disabled>Run match</button>
+        </form>
+        <p class="arena-note">100 BB stacks. Each deal is played twice with seats swapped. Uses averaged strategies, with uniform play for missing nodes; preflop-only agents check/call later streets.</p>
+        <p id="arenaStatus" class="arena-status" role="status">Start locally with npm run dev to compare checkpoints.</p>
+        <div id="arenaResult" class="arena-result"></div>
       </section>
     </main>
 
