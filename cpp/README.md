@@ -112,9 +112,15 @@ venv/bin/python -m pip install -r requirements-training.txt
 venv/bin/python -m unittest discover -s tests -v
 ```
 
-On the development Apple Silicon machine with Clang 21, a single C++ full-game
-run of 100,000 hands, 100 equity samples, and seed 7 averaged about **14,000
-hands/second**, including its final checkpoint. It ended with 30,129 nodes in a
-4 MiB allocated table. This is a local throughput check; stochastic trajectories,
-node growth, disk speed, compiler, and machine load affect longer runs. It does
-not establish convergence or playing strength.
+On the development Apple Silicon machine with Clang 21, the median of three
+C++ full-game runs of 100,000 hands, 100 equity samples, and seed 7 was **15,419
+hands/second**, including the final checkpoint. Each ended with 33,992 nodes in
+a 4 MiB allocated table; median process peak RSS was 9.5 MiB. Sharing board
+counts, reusing river scores, and an 8 KiB straight lookup improved throughput
+by 16.7% over the corrected trainer before these optimizations, with identical
+RNG state and node weights after 100,000 hands.
+
+These are local throughput checks. Node growth, compiler, hardware, and machine
+load affect longer runs; the results do not establish convergence or playing
+strength. See [the Python/C++ training review](../TRAINING_REVIEW.md) for the
+saved-model coverage audit and remaining information/action abstraction limits.
