@@ -56,7 +56,8 @@ def python_records(source):
     # Class defaults keep legacy stores loadable, but are not recorded metadata.
     metadata = vars(nodes)
     yield dict(format='pickle', iterations=metadata.get('iterations'), algorithm=nodes.algorithm,
-               samples=metadata.get('samples'), schema=nodes.schema, mode=nodes.trainer or 'legacy/unknown')
+               samples=metadata.get('samples'), schema=nodes.schema, mode=nodes.trainer or 'legacy/unknown',
+               workers=nodes.workers, chunk_size=nodes.chunk_size)
     for key, node in nodes.items():
         street = 'preflop' if isinstance(key[0], str) else {5: 'flop', 7: 'turn', 4: 'river'}[len(key[0])]
         yield street, key, [node.regret_sum.get(a, 0) for a in ACTIONS], \

@@ -4,6 +4,7 @@ from pokerkit import Automation, Mode, NoLimitTexasHoldem, State
 from utils.training import TrainingNode, train_loop, training_main
 from utils.bucketer import Bucketer
 from utils.agent_policy import legal_actions, bucket_with_actions
+from utils.shared_nodes import read_snapshot
 
 
 
@@ -124,21 +125,17 @@ def run_chunk(args):
 
     from utils.card_bucketer import configure_caches
     configure_caches(cache_size)
-    base_nodes = pickle.loads(snapshot)
-    delta_nodes = {}
-    local_bucketer = Bucketer(samples)
-
-    for count in range(chunk_size):
-        state = create_state()
-        play_hand(
-            state,
-            traverser=(start + count) % 2,
-            base_nodes=base_nodes,
-            delta_nodes=delta_nodes,
-            bucketer=local_bucketer,
-        )
-
-    return delta_nodes, chunk_size
+    with read_snapshot(snapshot) as (base_nodes, delta_nodes):
+        local_bucketer = Bucketer(samples)
+        for count in range(chunk_size):
+            play_hand(
+                create_state(),
+                traverser=(start + count) % 2,
+                base_nodes=base_nodes,
+                delta_nodes=delta_nodes,
+                bucketer=local_bucketer,
+            )
+        return delta_nodes, chunk_size
 
 def merge_nodes(master: dict, delta: dict):
     for key, delta_node in delta.items():
@@ -157,7 +154,7 @@ def merge_nodes(master: dict, delta: dict):
 
 # ── Training loop ──────────────────────────────────────────────────────────────
 
-def train(iters=100_000, n_workers=1, merge_every=1000, **options):
+def train(iters=100_000, n_workers=None, merge_every=None, **options):
     return train_loop(create_state, play_hand, run_chunk, merge_nodes,
                       trainer="full-game", iters=iters, n_workers=n_workers,
                       merge_every=merge_every, **options)

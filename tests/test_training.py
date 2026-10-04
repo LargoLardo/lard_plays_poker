@@ -3,6 +3,8 @@ import json
 import random
 import subprocess
 import sys
+from itertools import product, islice
+from multiprocessing.shared_memory import SharedMemory
 import tempfile
 from pathlib import Path
 import unittest
@@ -16,6 +18,7 @@ from utils import card_bucketer as cards
 from utils.training import TrainingNode, NodeStore, load_nodes, save_nodes
 from tools.audit_model import audit
 from utils.agent_policy import legal_actions, bucket_with_actions
+from utils.shared_nodes import SharedSnapshot, BudgetExceeded, NodeDelta, read_snapshot
 
 
 class TrainingTests(unittest.TestCase):
@@ -187,6 +190,105 @@ class TrainingTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in snapshots.iterdir()), ['iter-4.pkl', 'iter-8.pkl'])
             for count in (4, 8):
                 self.assertEqual(load_nodes(snapshots / f'iter-{count}.pkl').iterations, count)
+
+    def test_shared_regrets_match_dictionary_workers_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for trainer in (pf, full):
+                nodes = trainer.train(24, samples=3, seed=8,
+                                      output=Path(directory) / f'{trainer.__name__}.pkl')
+                snapshot = SharedSnapshot(1024 * 1024)
+                original = pickle.dumps(nodes)
+                try:
+                    descriptor = snapshot.publish(nodes, 10000)
+                    with read_snapshot(descriptor) as (base, _):
+                        for key, node in nodes.items():
+                            self.assertEqual(base.get(key).regret_sum,
+                                             {a: node.regret_sum.get(a, 0.0) for a in ('fold', 'check/call', 'raise')})
+                    old, old_count = trainer.run_chunk((8, 72, original, 24, 3, 0))
+                    old_rng = random.getstate()
+                    shared, count = trainer.run_chunk((8, 72, descriptor, 24, 3, 0))
+                    self.assertEqual(count, old_count)
+                    self.assertEqual(random.getstate(), old_rng)
+                    self.assertEqual(set(shared), set(old))
+                    for key in old:
+                        self.assertEqual(shared[key].regret_sum, old[key].regret_sum)
+                        self.assertEqual(shared[key].strategy_sum, old[key].strategy_sum)
+                        self.assertEqual(shared[key].times_visited, old[key].times_visited)
+                    self.assertEqual(pickle.dumps(nodes), original)
+                finally:
+                    name = snapshot.table.memory.name
+                    snapshot.close()
+                with self.assertRaises(FileNotFoundError):
+                    SharedMemory(name=name)
+
+    def test_shared_table_growth_action_masks_and_working_limits(self):
+        # A shared allowance lets uneven tasks use otherwise-idle update space.
+        from multiprocessing import get_context
+        counter = get_context('spawn').Value('Q', 0)
+        with patch.object(NodeDelta, 'counter', counter), patch.object(NodeDelta, 'total_limit', 2):
+            first, second = NodeDelta(), NodeDelta()
+            first['a'], first['b'] = 1, 2
+            first['a'] = 3
+            with self.assertRaises(BudgetExceeded):
+                second['c'] = 4
+            self.assertEqual(counter.value, 2)
+        snapshot = SharedSnapshot(128 * 1024)
+        keys = [('AKo', 'SB', 'deep', 'root', 'Limp', mask) for mask in (3, 7)]
+        nodes = {key: TrainingNode() for key in keys}
+        for key in keys:
+            nodes[key].regret_sum['check/call'] = key[-1]
+        try:
+            descriptor = snapshot.publish(nodes, 1)
+            with read_snapshot(descriptor) as (base, delta):
+                self.assertEqual([base.get(key).regret_sum['check/call'] for key in keys], [3, 7])
+                nodes[keys[0]].regret_sum['check/call'] = 9
+                self.assertEqual(base.get(keys[0]).regret_sum['check/call'], 3, 'snapshot stays frozen')
+                delta[keys[0]] = TrainingNode()
+                with self.assertRaises(BudgetExceeded):
+                    delta[keys[1]] = TrainingNode()
+            for hand, pos, stack, history, size, mask in islice(product(
+                    ('22o', '33o'), ('BB', 'SB'), ('short', 'medium', 'deep'),
+                    ('root', 'limped', 'vs_open', 'vs_3bet', 'vs_4bet'),
+                    ('Limp', '~2.0bb raise', '~2.75bb raise', '~6.0bb raise', '~10.0bb raise', '~25.0bb raise', 'Jam (>25.00bb) raise'),
+                    (2, 3, 6, 7)), 900):
+                nodes[(hand, pos, stack, history, size, mask)] = TrainingNode()
+            descriptor = snapshot.publish(nodes, 1)
+            self.assertEqual(snapshot.table.slots, 2048)
+            with read_snapshot(descriptor) as (base, _):
+                self.assertEqual(base.get(keys[0]).regret_sum['check/call'], 9)
+                self.assertTrue(all(base.get(key) is not None for key in nodes))
+            with self.assertRaises(BudgetExceeded):
+                snapshot.check_size(10000)
+        finally:
+            snapshot.close()
+
+    def test_shared_parallel_resume_auto_workers_and_batch_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'parallel.pkl'
+            pf.train(24, n_workers=3, merge_every=4, seed=9, output=output, samples=3)
+            resumed = pf.train(24, resume=output)
+            continuous = pf.train(48, n_workers=3, merge_every=4, seed=9,
+                                  output=root / 'reference.pkl', samples=3)
+            self.assertEqual((resumed.workers, resumed.chunk_size, resumed.samples), (3, 4, 3))
+            self.assertEqual(resumed.rng_state, continuous.rng_state)
+            self.assertEqual(set(resumed), set(continuous))
+            for key in resumed:
+                self.assertEqual(resumed[key].regret_sum, continuous[key].regret_sum)
+                self.assertEqual(resumed[key].strategy_sum, continuous[key].strategy_sum)
+            limited = pf.train(8, n_workers=2, merge_every=4, seed=9, max_nodes=1,
+                               output=root / 'limited.pkl')
+            empty = pf.train(0, n_workers=2, merge_every=4, seed=9, output=root / 'empty.pkl')
+            self.assertEqual(limited.iterations, 0)
+            self.assertFalse(limited)
+            self.assertEqual(limited.rng_state, empty.rng_state)
+            with patch('utils.training.os.cpu_count', return_value=7):
+                # On Python 3.13+, process_cpu_count is the affinity-aware source.
+                with patch('utils.training.os.process_cpu_count', return_value=7, create=True):
+                    auto = pf.train(0, n_workers=0, output=root / 'auto.pkl')
+            self.assertEqual(auto.workers, 7)
+            with self.assertRaises(ValueError):
+                pf.train(0, n_workers=257, output=root / 'invalid.pkl')
 
     def test_worker_snapshot_does_not_grow_on_regret_reads(self):
         node = pf.Node()
