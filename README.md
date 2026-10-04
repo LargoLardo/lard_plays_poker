@@ -98,14 +98,44 @@ python full_game_mccfr.py --iterations 100000 --resume nodesets/full-game.pkl
 python pf_mccfr.py --iterations 100000 --output nodesets/preflop.pkl
 ```
 
-`--iterations` means additional hands. Training defaults to one worker, updating
-one node store instead of copying it to every CPU. Equity and positive/negative
-potential share one sampling pass and a joint cache capped at 10,000 entries
-(`--cache-size 0` disables caching). `--max-nodes 200000`
-stops growth after the current hand; an explicit multiworker run checks this
-limit after each batch and can overshoot by a batch's new nodes. Use
-`--workers 1` for minimum RAM, or explicitly choose `--workers N --chunk-size N`.
-This node limit controls growth, not exact process RSS.
+`--iterations` means additional hands. Training defaults to one worker.
+Both Python trainers accept `--workers 0` to detect available logical CPUs,
+or `--workers N` for an explicit count (1–256). Parallel workers use one packed
+shared regret table instead of unpickling a full model each. Processes start
+with `spawn` on every platform. The original PokerKit training logic remains;
+this is pure Python, and C++ is still much faster.
+
+The default `--chunk-size 64` allows up to `workers × 64` hands per batch;
+smaller tasks balance work across cores. Results merge in a fixed order, so
+scheduling does not change a successful run. Worker count, chunk size, samples,
+nodes, and RNG state are restored on resume. Changing batching changes the
+training trajectory; parallel throughput alone does not establish strength.
+
+Equity and positive/negative potential share one sampling pass and a joint cache
+capped at 10,000 entries (`--cache-size 0` disables caching). That cap is divided
+among parallel workers. `--max-nodes 200000` stops serial growth after the current
+hand, which can overshoot by a hand. Parallel mode checks the projected node
+count before applying a whole batch; a failed batch and its RNG draws roll back.
+Ctrl+C/SIGTERM finishes the current hand/batch and saves.
+
+Python's `--memory-mb 256` budgets **additional working buffers**, including the
+shared table and conservative update-node allowances across all tasks. The
+master Python dictionary, interpreter/library RAM per process, caches, and
+allocator overhead are additional. It is not a total RSS cap or the same budget
+as C++'s packed model table. `--workers 1` minimizes Python process overhead;
+`--workers 8` leaves more CPU capacity available on the 12-core development Mac.
+
+Python 3.10+ training runs on Windows, macOS, and Linux. For example, from
+Windows Command Prompt or PowerShell:
+
+```powershell
+py -3 -m pip install -r requirements-training.txt
+py -3 full_game_mccfr.py --workers 0 --iterations 1000000 --samples 100 --memory-mb 256 --output nodesets/full-game-shared.pkl
+```
+
+The shared table uses the standard library's [cross-process shared memory](https://docs.python.org/3/library/multiprocessing.shared_memory.html).
+Use the same flags with `pf_mccfr.py` for preflop training. Tests use the Windows
+`spawn` process model locally; the training CI also includes a Windows runner.
 
 Checkpoints save atomically every 60 seconds and at completion, interruption, or
 the node limit. Set the interval with `--checkpoint-every`; use `--resume` to
@@ -149,6 +179,8 @@ See [TRAINING_REVIEW.md](TRAINING_REVIEW.md) for the Python/C++ algorithm review
 model coverage audit, measured optimizations, and remaining abstraction limits.
 The native trainer supports `--workers 0` to use all CPU cores while sharing one
 node table; [CPU options and resume details](cpp/README.md#using-more-cpu-cores).
+`python cpp/run.py` builds/runs C++ on Windows, macOS, and Linux; Windows needs
+MSVC in a Developer Command Prompt or an installed GCC/Clang compiler.
 Audit a trusted local checkpoint without changing it:
 
 ```bash

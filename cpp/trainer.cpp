@@ -1,3 +1,10 @@
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include "poker.hpp"
 #include <csignal>
 #include <cstring>
@@ -342,7 +349,12 @@ void finish_file(std::ofstream& out, const fs::path& temporary, const fs::path& 
     if (!out) throw std::runtime_error("Failed writing " + temporary.string());
     out.close();
     if (!out) throw std::runtime_error("Failed closing " + temporary.string());
+#ifdef _WIN32
+    if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        throw std::system_error(int(GetLastError()), std::system_category(), "Cannot replace checkpoint");
+#else
     fs::rename(temporary, path);
+#endif
 }
 void save(const Trainer& trainer, const fs::path& path) {
     make_parent(path);

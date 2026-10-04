@@ -62,7 +62,8 @@ throughput. The changes target equity computation:
   fixed hero scores, and stores the three results in one bounded joint cache.
   Flop/turn bucketing still uses one pass with caching disabled.
 - Python's cache cap remains 10,000 entries by default, now for one cache rather
-  than two. Native card features stay local to a traversal. The existing native
+  than two. Parallel Python workers divide that cap and read a shared packed
+  regret table rather than separate unpickled models. Native card features stay local to a traversal. The existing native
   memory budget, transactional hand rollback, and streamed checkpoints remain.
 
 Local measurements on Apple Silicon / Apple Clang 21, median of three runs:
@@ -121,6 +122,36 @@ cores. At 100 samples the increase is 5.1×; synchronization/merging takes a
 larger share of wall time. Repetitions with identical worker/chunk settings
 produce identical checkpoint hashes. Full model copies are avoided, but these
 short runs do not bound peak memory once every possible node has been reached.
+
+Python parallel mode now publishes one read-only packed regret table with
+32-byte slots using the same schema-2 integer keys. Spawned workers read it
+directly, retain bounded local updates, and return deltas for a deterministic
+merge. The coordinator stages changed nodes before applying a batch. Its
+working-buffer budget covers the shared table and a common update-node allowance
+across tasks, permitting uneven tasks to share free space. Master dictionary,
+interpreter/library RAM, caches, and allocator overhead are additional; this is
+not a total RSS cap. Node limits or buffer failures roll back the whole batch
+and coordinator RNG. Worker/chunk/sample settings persist in Python checkpoints.
+
+A read-only capacity test with the 56,143-node bundled model, four spawned
+workers, and 1,003 queried keys measured peak worker RSS around 152 MiB with
+copied dictionaries versus 50 MiB with shared regrets. The shared table was
+4 MiB, and all queried regret sums matched. This isolates snapshot memory;
+it is not a long training memory bound or a playing-strength measurement.
+Both Python worker implementations also match dictionary-based fixed-seed
+traversals exactly, including RNG state and all node updates. A 12-worker Python
+full-game smoke run completed 768 hands at 100 equity samples and saved exact
+384/768-hand snapshots. Python still uses PokerKit and its original evaluator,
+so the C++ throughput gains do not apply to Python.
+
+Live interruption checks on macOS sent SIGINT to serial Python training and
+SIGTERM to a three-worker run. Both saved completed hands/batches, matched an
+uninterrupted reference including RNG state and all updates, and resumed.
+
+A portable native launcher, MSVC bit scans, and Windows checkpoint replacement
+remove the shell/GCC-only assumptions. The training CI matrix includes Windows,
+Linux, and macOS; it has not run locally on Windows. Workers can be configured
+from 1 to 256, with `0` detecting available logical CPUs.
 
 ## Audit of the original saved model
 
@@ -235,7 +266,7 @@ venv/bin/python tools/audit_model.py FULLGAME_10m_iters.pkl --swap-legacy-positi
 venv/bin/python tools/audit_model.py nodesets/cpp/full-v4.bin --output artifacts/audit-native.json
 ```
 
-Validation includes 25 Python/native tests and browser policy checks, with
+Validation includes 28 Python/native tests and browser policy checks, with
 12,005 Treys evaluator comparisons, 250 PokerKit betting sequences, averaging-phase
 checks, legacy resume guards, checkpoint/resume, memory rollback, and the joint
 sample/cache regression. Native serial/parallel unit checks also pass under

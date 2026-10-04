@@ -7,6 +7,7 @@ from pathlib import Path
 import random
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -15,13 +16,15 @@ from treys import Card as TreysCard, Evaluator
 from utils.bucketer import Bucketer
 from utils.agent_policy import legal_actions, bucket_with_actions
 from full_game_mccfr import get_pf_raise_size, get_halfp_raise_size
+from cpp.run import build
+from utils.shared_nodes import packed_bucket
 
 ROOT = Path(__file__).resolve().parents[1]
 CPP = ROOT / 'cpp'
 
 
 def run(*arguments):
-    return subprocess.run([str(CPP / 'run.sh'), *map(str, arguments)], cwd=ROOT, text=True, capture_output=True)
+    return subprocess.run([sys.executable, str(CPP / 'run.py'), *map(str, arguments)], cwd=ROOT, text=True, capture_output=True)
 
 
 def read_checkpoint(path):
@@ -43,7 +46,9 @@ def read_checkpoint(path):
 class CppTrainingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        subprocess.run([str(CPP / 'test.sh')], cwd=ROOT, check=True, capture_output=True)
+        cls.engine = build(test=True)
+        build()
+        subprocess.run([str(cls.engine)], cwd=ROOT, check=True, capture_output=True)
 
     def test_evaluator_matches_treys_for_5_6_7_cards(self):
         rng = random.Random(8)
@@ -53,7 +58,7 @@ class CppTrainingTests(unittest.TestCase):
         hands += [text.split() for text in [
             'As 2s 3s 4s 5s Kd Qh', 'As Ah Ad Ks Kh Kd 2c', 'Ts Js Qs Ks As 2d 3h',
             'As Ah Ad Ac Ks Kh Kd', '2s 3d 4h 5c 6s 7d 8h']]
-        result = subprocess.run([str(CPP / 'build/test'), 'eval'], input='\n'.join(' '.join(h) for h in hands), text=True, capture_output=True, check=True)
+        result = subprocess.run([str(self.engine), 'eval'], input='\n'.join(' '.join(h) for h in hands), text=True, capture_output=True, check=True)
         scores = list(map(int, result.stdout.splitlines()))
         evaluator = Evaluator()
         expected = [evaluator.evaluate([TreysCard.new(c) for c in hand[:2]], [TreysCard.new(c) for c in hand[2:]]) for hand in hands]
@@ -152,12 +157,14 @@ class CppTrainingTests(unittest.TestCase):
                 snapshots.append(snapshot())
             cases.append(' '.join(deal + list(map(str, actions))))
             expected.append(snapshots)
-        result = subprocess.run([str(CPP / 'build/test'), 'trace'], input='\n'.join(cases), text=True, capture_output=True, check=True)
+        result = subprocess.run([str(self.engine), 'trace'], input='\n'.join(cases), text=True, capture_output=True, check=True)
         native_cases = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(len(native_cases), len(expected))
         for index, (actual, wanted) in enumerate(zip(native_cases, expected)):
             self.assertEqual(len(actual), len(wanted), cases[index])
             for native, python in zip(actual, wanted):
+                if native['street'] < 4:
+                    self.assertEqual(packed_bucket(native['bucket']), native['key'])
                 for key, value in python.items():
                     if key == 'bucket' and python['street']:
                         self.assertEqual(native[key][1:], value[1:], cases[index])

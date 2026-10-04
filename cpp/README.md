@@ -2,8 +2,23 @@
 
 This is a separate implementation of the original heads-up, 100bb Hold'em
 trainer. The Python trainers, prototypes, and bundled 10M model remain in the
-repository. It needs a C++17 compiler (Clang or GCC) and no Python packages or
+repository. It needs a C++17 compiler (Clang, GCC, or MSVC) and no Python packages or
 third-party C++ libraries.
+
+For a launcher that also works on Windows, use Python 3.10+ and a C++17 compiler:
+
+```bash
+python cpp/run.py --workers 0 --iterations 1000000 --memory-mb 256
+python cpp/run.py --test
+```
+
+On Windows, run `py -3 cpp/run.py ...` from a Visual Studio Developer Command
+Prompt (MSVC `cl`), or install GCC/Clang and set `CXX` if needed. The launcher
+uses MSVC flags and `.exe` filenames on Windows; it also supports `clang-cl`.
+The native code uses MSVC rank intrinsics and Windows checkpoint replacement
+with [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw),
+so repeated saves can replace an existing checkpoint. The shell launcher below
+continues to work on macOS/Linux without requiring Python.
 
 From the repository root:
 
@@ -50,7 +65,9 @@ to legacy keys for old models. They never use a new node with a different mask.
 
 ## Using more CPU cores
 
-`--workers 0` uses all detected CPU cores; choose `--workers 8` to leave more
+`--workers 0` uses all detected logical CPU cores (up to 256); explicit counts
+1–256 are supported, with no requirement for exactly 12 cores. On the
+development Mac, choose `--workers 8` to leave more
 CPU capacity available for other work. Serial training remains the default.
 On the development Mac, all cores means 12 workers (8 performance and 4
 efficiency cores):
@@ -215,3 +232,8 @@ These are local throughput checks. Node growth, compiler, hardware, and machine
 load affect longer runs; the results do not establish convergence or playing
 strength. See [the Python/C++ training review](../TRAINING_REVIEW.md) for the
 saved-model coverage audit and remaining information/action abstraction limits.
+
+The training workflow runs Python/shared-memory, native engine, checkpoint/resume,
+and policy checks on Windows/MSVC, Linux/GCC, and macOS/Clang. Platform results
+are available once the workflow runs after a push; local validation here used
+macOS/Clang and the Python `spawn` multiprocessing context.

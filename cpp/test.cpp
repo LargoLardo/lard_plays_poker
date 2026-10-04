@@ -106,7 +106,8 @@ void snapshot(std::ostream& out, const State& state, const Cards& cards) {
     else {
         std::mt19937_64 rng(1);
         int mask = legal_mask(state, state.raise_size(false, rng));
-        out << bucket_json(bucket(state, card_bucket(cards, state.actor, state.street, 20, rng), mask), false, true);
+        auto key = bucket(state, card_bucket(cards, state.actor, state.street, 20, rng), mask);
+        out << bucket_json(key, false, true) << ",\"key\":" << key;
     }
     std::array<int, 7> a{}, b{};
     a[0] = cards[0]; a[1] = cards[1]; b[0] = cards[2]; b[1] = cards[3];

@@ -7,6 +7,9 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 namespace poker {
 using Cards = std::array<int, 9>; // BB hole, SB hole, five board cards.
@@ -58,7 +61,14 @@ inline uint32_t score(int category, const std::array<int, 5>& values) {
     return result;
 }
 
-inline int highest_rank(uint32_t mask) { return mask ? 31 - __builtin_clz(mask) : 0; }
+inline int highest_rank(uint32_t mask) {
+#ifdef _MSC_VER
+    unsigned long rank = 0;
+    return _BitScanReverse(&rank, mask) ? int(rank) : 0;
+#else
+    return mask ? 31 - __builtin_clz(mask) : 0;
+#endif
+}
 
 inline std::array<int, 5> high_cards(uint32_t mask) {
     std::array<int, 5> values{};
