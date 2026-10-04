@@ -45,6 +45,7 @@ class NodeStore(dict):
     rng_state = None
     trainer = None
     samples = 100
+    algorithm = 1
 
 
 class NodeUnpickler(pickle.Unpickler):
@@ -75,7 +76,7 @@ def save_nodes(nodes, path):
 def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
                iters=100_000, n_workers=1, merge_every=1000, output=None,
                resume=None, seed=1, samples=100, cache_size=10_000,
-               max_nodes=200_000, checkpoint_every=60):
+               max_nodes=200_000, checkpoint_every=60, reset_average=False):
     n_workers = n_workers or 1
     if iters < 0 or n_workers < 1 or merge_every < 1 or samples < 1:
         raise ValueError("iterations must be nonnegative; workers/chunk/samples must be positive")
@@ -84,6 +85,15 @@ def train_loop(create_state, play_hand, run_chunk, merge_nodes, *, trainer,
     nodes = load_nodes(resume) if resume else NodeStore()
     if nodes.trainer and (nodes.trainer != trainer or nodes.samples != samples):
         raise ValueError("Resume with the same trainer and sample count")
+    if resume and nodes.algorithm != 2 and not reset_average:
+        raise ValueError("Legacy checkpoint averages use a different algorithm; start fresh or pass --reset-average")
+    if reset_average:
+        if not resume:
+            raise ValueError("--reset-average requires --resume")
+        for node in nodes.values():
+            node.strategy_sum.clear()
+            node.times_visited = 0
+    nodes.algorithm = 2
     nodes.trainer, nodes.samples = trainer, samples
     random.seed(seed)
     if nodes.rng_state is not None:
@@ -159,8 +169,9 @@ def training_main(train):
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output")
     parser.add_argument("--resume")
+    parser.add_argument("--reset-average", action="store_true", help="Explicitly discard legacy averages/visits while retaining regrets")
     args = parser.parse_args()
     train(args.iterations, args.workers, args.chunk_size, output=args.output,
           resume=args.resume, seed=args.seed, samples=args.samples,
           cache_size=args.cache_size, max_nodes=args.max_nodes,
-          checkpoint_every=args.checkpoint_every)
+          checkpoint_every=args.checkpoint_every, reset_average=args.reset_average)

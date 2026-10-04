@@ -23,7 +23,7 @@ def run(*arguments):
 
 def read_checkpoint(path):
     with open(path, 'rb') as stream:
-        if stream.read(8) != b'LARDCPP1':
+        if stream.read(8) not in (b'LARDCPP1', b'LARDCPP2'):
             raise ValueError('invalid magic')
         mode, samples, iterations, count, length = struct.unpack('<IIQQI', stream.read(28))
         rng = stream.read(length)
@@ -169,6 +169,13 @@ class CppTrainingTests(unittest.TestCase):
                         self.assertIsInstance(json.loads(key)[0], list)
                     else:
                         self.assertEqual(len(key.split('|')), 5)
+            legacy = root / 'legacy.bin'
+            legacy.write_bytes(b'LARDCPP1' + a.read_bytes()[8:])
+            self.assertNotEqual(run('--resume', legacy, '--iterations', 0).returncode, 0)
+            reset = run('--resume', legacy, '--reset-average', '--iterations', 0, '--output', root / 'reset.bin')
+            self.assertEqual(reset.returncode, 0, reset.stderr)
+            reset_nodes = read_checkpoint(root / 'reset.bin')[4]
+            self.assertTrue(all(row[3:6] == [0, 0, 0] and row[6] == 0 for row in reset_nodes.values()))
             self.assertNotEqual(run('--iterations', 1, '--output', a).returncode, 0)
             self.assertNotEqual(run('--resume', a, '--samples', 11).returncode, 0)
             limited = run('--iterations', 100_000, '--samples', 10, '--memory-mb', 4, '--output', root / 'limit.bin')

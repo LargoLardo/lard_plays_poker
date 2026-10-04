@@ -110,7 +110,8 @@ Checkpoints save atomically every 60 seconds and at completion, interruption, or
 the node limit. Set the interval with `--checkpoint-every`; use `--resume` to
 continue. New runs refuse to overwrite existing outputs. New checkpoints remain
 pickle node dictionaries usable by the agents and browser exporter; old pickles
-can also be resumed. Python resumes preserve accumulated nodes and RNG state,
+can also be read, and can be resumed with `--reset-average` to explicitly
+discard legacy average strategies and visit counts while retaining regrets. Python resumes preserve accumulated nodes and RNG state,
 but bounded equity caches are recomputed, so full-game resumes need not be
 bit-for-bit identical to uninterrupted runs. Only load trusted pickle files.
 

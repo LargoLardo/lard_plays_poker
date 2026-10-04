@@ -35,6 +35,18 @@ void unit_tests() {
     Trainer limited(false, 10, 9, budget, 1);
     auto before = limited.rng;
     assert(!limited.step() && limited.iterations == 0 && limited.nodes.size() == 0 && limited.rng == before);
+    Trainer average(false, 1, 1, budget, 0);
+    average.cards = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+    for (auto& row : average.hands) row.fill(-1);
+    auto root = bucket(State{}, card_bucket(average.cards, 1, 0, 1, average.rng));
+    Node base; base.regret[0] = 100;
+    average.nodes.add(root, base);
+    assert(average.traverse(State{}, 0) == .5);
+    assert(average.delta.at(root).strategy[0] == 1 && average.delta.at(root).visits == 1);
+    assert((average.delta.at(root).regret == std::array<double, 3>{}));
+    average.delta.clear();
+    average.traverse(State{}, 1);
+    assert((average.delta.at(root).strategy == std::array<double, 3>{}) && average.delta.at(root).visits == 0);
     Nodes table(budget);
     assert(table.prepare(1000));
     for (uint32_t i = 0; i < 1000; ++i) { Node n; n.visits = i; table.add(i, n); }

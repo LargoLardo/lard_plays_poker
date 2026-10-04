@@ -86,6 +86,29 @@ class TrainingTests(unittest.TestCase):
         pf.play_hand(state, 0, base, {}, pf.Bucketer())
         self.assertFalse(node.regret_sum)
 
+    def test_opponent_averaging_and_legacy_resume_guard(self):
+        for trainer in (pf, full):
+            state = trainer.create_state()
+            bucket = trainer.Bucketer().exact_preflop_bucket(state, [])
+            base = trainer.Node()
+            base.regret_sum['fold'] = 100
+            delta = {}
+            value = trainer.play_hand(state, 0, {bucket: base}, delta, trainer.Bucketer(1))
+            self.assertEqual(value, .5)
+            self.assertEqual(delta[bucket].strategy_sum['fold'], 1)
+            self.assertEqual(delta[bucket].times_visited, 1)
+            self.assertFalse(delta[bucket].regret_sum)
+            self.assertFalse(base.strategy_sum)
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory) / 'legacy.pkl'
+            save_nodes(NodeStore({bucket: base}), legacy)
+            with self.assertRaisesRegex(ValueError, 'Legacy checkpoint'):
+                full.train(0, resume=legacy)
+            reset = full.train(0, resume=legacy, reset_average=True)
+            self.assertEqual(reset.algorithm, 2)
+            self.assertFalse(reset[bucket].strategy_sum)
+            self.assertEqual(reset[bucket].regret_sum['fold'], 100)
+
     def test_raise_to_includes_existing_bet(self):
         state = full.create_state()
         state.complete_bet_or_raise_to(3)

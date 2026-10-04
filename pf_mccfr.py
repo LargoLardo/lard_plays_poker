@@ -34,7 +34,7 @@ def mccfr(state: State, traverser: int, pf_history: list[str], base_nodes: dict,
 
     base_node = base_nodes.get(bucket)
 
-    if cur_actor == traverser and bucket not in delta_nodes:
+    if bucket not in delta_nodes:
         delta_nodes[bucket] = Node()
     delta_node = delta_nodes.get(bucket)
 
@@ -68,17 +68,19 @@ def mccfr(state: State, traverser: int, pf_history: list[str], base_nodes: dict,
         return next_state, next_history
 
     if cur_actor == traverser:
-        delta_node.times_visited += 1
         utils = {}
         for action in actions:
             next_state, next_history = next_position(action)
             utils[action] = mccfr(next_state, traverser, next_history, base_nodes, delta_nodes, bucketer)
         node_util = sum(strat[a] * utils[a] for a in actions)
         for action in actions:
-            delta_node.strategy_sum[action] += strat[action]
             delta_node.regret_sum[action] += utils[action] - node_util
         return node_util
 
+    # Two-player external sampling: opponent reach is supplied by sampling.
+    delta_node.times_visited += 1
+    for action in actions:
+        delta_node.strategy_sum[action] += strat[action]
     action = random.choices(actions, weights=[strat[a] for a in actions])[0]
     next_state, next_history = next_position(action)
     return mccfr(next_state, traverser, next_history, base_nodes, delta_nodes, bucketer)

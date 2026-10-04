@@ -31,7 +31,17 @@ state. It reproduces an uninterrupted run on the same compiler/standard-library
 build. An explicit conflicting mode or sample count is rejected. Starting a new
 run refuses to overwrite an existing checkpoint. C++ checkpoints are versioned
 binary files; Python pickle checkpoints stay separate and cannot be resumed by
-the C++ executable.
+the C++ executable. Version 2 uses the standard two-player external-sampling
+average update at sampled opponent nodes. Version 1 checkpoints used a different
+average and are rejected by default. Start a fresh run, or explicitly retain
+legacy regrets while discarding its averages and visit counts:
+
+```bash
+./cpp/run.sh --resume nodesets/cpp/old.bin --reset-average --output nodesets/cpp/migrated.bin --iterations 1000000
+```
+
+Migration is a warm start, not proof that legacy regrets are correct. Keep the
+original checkpoint and prefer a fresh run when assessing model quality.
 
 ## Memory and checkpointing
 

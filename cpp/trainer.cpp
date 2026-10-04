@@ -109,12 +109,11 @@ struct Trainer {
         if (hand < 0) hand = card_bucket(cards, state.actor, state.street, samples, rng);
         uint32_t key = bucket(state, hand);
         auto it = delta.find(key);
-        if (it == delta.end() && state.actor == traverser) {
+        if (it == delta.end()) {
             if (delta.size() >= delta_limit) throw BudgetExceeded("Traversal memory reserve reached");
             it = delta.emplace(key, Node{}).first;
         }
-        Node empty;
-        Node& change = it == delta.end() ? empty : it->second;
+        Node& change = it->second;
         const Node* base = nodes.get(key);
         int amount = state.raise_size(preflop, rng);
         std::array<bool, 3> legal{state.bets[state.actor] < std::max(state.bets[0], state.bets[1]), true, state.can_raise(amount)};
@@ -128,7 +127,6 @@ struct Trainer {
         for (int action = 0; action < 3; ++action) if (legal[action])
             strategy[action] = positive > 0 ? strategy[action] / positive : 1.0 / count;
         if (state.actor == traverser) {
-            ++change.visits;
             double expected = 0;
             for (int action = 0; action < 3; ++action) if (legal[action]) {
                 State next = state;
@@ -137,11 +135,14 @@ struct Trainer {
                 expected += strategy[action] * values[action];
             }
             for (int action = 0; action < 3; ++action) if (legal[action]) {
-                change.strategy[action] += strategy[action];
                 change.regret[action] += values[action] - expected;
             }
             return expected;
         }
+        // Average at sampled opponent nodes; regret updates stay at traverser nodes.
+        ++change.visits;
+        for (int action = 0; action < 3; ++action) if (legal[action])
+            change.strategy[action] += strategy[action];
         double roll = std::generate_canonical<double, 53>(rng);
         int chosen = 1;
         for (int action = 0; action < 3; ++action) if (legal[action]) {
@@ -224,7 +225,7 @@ void save(const Trainer& trainer, const fs::path& path) {
     fs::path temporary = path.string() + ".tmp";
     std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
     if (!out) throw std::runtime_error("Cannot write " + temporary.string());
-    out.write("LARDCPP1", 8);
+    out.write("LARDCPP2", 8);
     write_uint(out, trainer.preflop, 4); write_uint(out, trainer.samples, 4);
     write_uint(out, trainer.iterations, 8); write_uint(out, trainer.nodes.size(), 8);
     std::ostringstream state; state << trainer.rng;
@@ -237,10 +238,13 @@ void save(const Trainer& trainer, const fs::path& path) {
     });
     finish_file(out, temporary, path);
 }
-void load(Trainer& trainer, const fs::path& path, bool mode_set, bool samples_set) {
+void load(Trainer& trainer, const fs::path& path, bool mode_set, bool samples_set, bool reset_average = false) {
     std::ifstream in(path, std::ios::binary);
     char magic[8]; in.read(magic, 8);
-    if (!in || std::string(magic, 8) != "LARDCPP1") throw std::runtime_error("Invalid C++ checkpoint");
+    bool legacy = in && std::string(magic, 8) == "LARDCPP1";
+    if (!in || (!legacy && std::string(magic, 8) != "LARDCPP2")) throw std::runtime_error("Invalid C++ checkpoint");
+    if (legacy && !reset_average)
+        throw std::runtime_error("Legacy checkpoint averages use a different algorithm; start fresh or pass --reset-average");
     auto mode = read_uint(in, 4), samples = read_uint(in, 4);
     if (mode > 1 || samples < 1 || samples > 1'000'000) throw std::runtime_error("Invalid checkpoint settings");
     if ((mode_set && bool(mode) != trainer.preflop) || (samples_set && int(samples) != trainer.samples))
@@ -263,7 +267,9 @@ void load(Trainer& trainer, const fs::path& path, bool mode_set, bool samples_se
         Node node;
         for (double& v : node.regret) v = read_double(in);
         for (double& v : node.strategy) { v = read_double(in); if (v < 0) throw std::runtime_error("Negative strategy weight"); }
-        node.visits = read_uint(in, 8); trainer.nodes.add(key, node);
+        node.visits = read_uint(in, 8);
+        if (reset_average) { node.strategy.fill(0); node.visits = 0; }
+        trainer.nodes.add(key, node);
     }
     if (in.peek() != EOF) throw std::runtime_error("Unexpected trailing checkpoint data");
 }
@@ -308,7 +314,7 @@ int main(int argc, char** argv) {
         static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559, "Requires IEEE 754 doubles");
         uint64_t iterations = 100'000, seed = 1, memory_mb = 256, max_nodes = 0, checkpoint_every = 60;
         int samples = 100;
-        bool preflop = false, mode_set = false, samples_set = false;
+        bool preflop = false, mode_set = false, samples_set = false, reset_average = false;
         fs::path output, resume, export_dir;
         for (int i = 1; i < argc; ++i) {
             std::string flag = argv[i];
@@ -322,10 +328,12 @@ int main(int argc, char** argv) {
                     "  --seed N              Reproducible fresh run (default 1)\n"
                     "  --output PATH         Binary checkpoint (default nodesets/cpp/<mode>.bin)\n"
                     "  --resume PATH         Load checkpoint, including mode/samples/RNG\n"
+                    "  --reset-average       Discard old averages/visits on resume, retaining regrets\n"
                     "  --checkpoint-every N  Seconds between atomic saves (default 60)\n"
                     "  --export DIR          Write compatible browser JSON after training\n";
                 return 0;
             }
+            if (flag == "--reset-average") { reset_average = true; continue; }
             if (i + 1 == argc) throw std::runtime_error("Missing value for " + flag);
             std::string value = argv[++i];
             if (flag == "--iterations") iterations = number(value);
@@ -347,7 +355,8 @@ int main(int argc, char** argv) {
         }
         if (memory_mb < 4 || memory_mb > 1'048'576) throw std::runtime_error("Memory budget must be 4..1048576 MiB");
         Trainer trainer(preflop, samples, seed, size_t(memory_mb) * 1024 * 1024, size_t(max_nodes));
-        if (!resume.empty()) load(trainer, resume, mode_set, samples_set);
+        if (reset_average && resume.empty()) throw std::runtime_error("--reset-average requires --resume");
+        if (!resume.empty()) load(trainer, resume, mode_set, samples_set, reset_average);
         if (iterations > std::numeric_limits<uint64_t>::max() - trainer.iterations)
             throw std::runtime_error("Iteration count would overflow the checkpoint counter");
         if (output.empty()) output = resume.empty() ? fs::path(trainer.preflop ? "nodesets/cpp/preflop.bin" : "nodesets/cpp/full.bin") : resume;
