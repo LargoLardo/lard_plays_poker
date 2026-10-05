@@ -11,7 +11,7 @@ Build a frozen card abstraction once, then train:
 ```bash
 python cpp/run.py --model v5 --build-abstraction nodesets/cpp/v5-cards.abs --workers 0
 python cpp/run.py --model v5 --abstraction nodesets/cpp/v5-cards.abs \
-  --iterations 10000000 --snapshot-every 1000000 --output nodesets/cpp/full-v5.bin
+  --iterations 10000000 --snapshot-every 1000000 --output checkpoints/v3.bin
 ```
 
 The full V4 and V5 checkpoints are tracked with Git LFS. After cloning, fetch
@@ -19,7 +19,7 @@ them with `git lfs install` followed by `git lfs pull`. V5 embeds its card
 abstraction, so continuing a checkpoint does not require a separate asset:
 
 ```bash
-python cpp/run.py --model v5 --resume nodesets/cpp/full-v5.bin \
+python cpp/run.py --model v5 --resume checkpoints/v3.bin \
   --iterations 10000000 --snapshot-every 1000000
 ```
 
@@ -69,7 +69,7 @@ resume matches an uninterrupted run with the same worker/chunk settings and
 batch boundaries. Snapshots split batches, so keep the same snapshot schedule
 when comparing trajectories. Ctrl+C finishes the current batch and saves.
 
-Select a V5 checkpoint in the existing local browser via **••• → Nodeset**.
+Select **V3** (the V5 model) in the existing browser via **••• → Nodeset**.
 Play uses a persistent native inference process with the embedded abstraction;
 it sends only the agent's cards, visible board, and public actions. Study shows
 a preflop projection combining the raise choices, excluding each source node
@@ -88,10 +88,10 @@ Arena reports translated actions and off-tree decisions. Browser bankrolls
 other than 100 BB remain outside the trained starting-stack game.
 
 ```bash
-python agent_arena.py nodesets/cpp/full-v5.bin nodesets/cpp/full-v4.bin \
+python agent_arena.py checkpoints/v3.bin checkpoints/v2.bin \
   --hands 100000 --seed 17 --output artifacts/arena/v5-v4.json
-python agent_arena.py nodesets/cpp/full-v5.bin baseline:random --hands 100000
-python tools/audit_model.py nodesets/cpp/full-v5.bin
+python agent_arena.py checkpoints/v3.bin baseline:random --hands 100000
+python tools/audit_model.py checkpoints/v3.bin
 python cpp/run.py --model v5 --test
 ```
 
@@ -156,7 +156,7 @@ remain readable for inspection/export, but cannot resume training, even with
 run with a new output, or export an old checkpoint without rewriting it:
 
 ```bash
-./cpp/run.sh --iterations 1000000 --output nodesets/cpp/full-v4.bin
+./cpp/run.sh --iterations 1000000 --output checkpoints/v2.bin
 ./cpp/run.sh --resume nodesets/cpp/old.bin --iterations 0 --export nodesets/cpp/old-web-model
 ```
 
@@ -176,8 +176,8 @@ efficiency cores):
 
 ```bash
 caffeinate -i ./cpp/run.sh --workers 0 --iterations 100000000 --samples 500 \
-  --memory-mb 256 --snapshot-every 1000000 --output nodesets/cpp/full-v4.bin
-./cpp/run.sh --resume nodesets/cpp/full-v4.bin --iterations 100000000 --snapshot-every 1000000
+  --memory-mb 256 --snapshot-every 1000000 --output checkpoints/v2.bin
+./cpp/run.sh --resume checkpoints/v2.bin --iterations 100000000 --snapshot-every 1000000
 ```
 
 Workers share one immutable node table during each batch and keep bounded local

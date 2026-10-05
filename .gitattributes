@@ -1,2 +1,1 @@
-nodesets/cpp/full-v4.bin filter=lfs diff=lfs merge=lfs -text
-nodesets/cpp/full-v5.bin filter=lfs diff=lfs merge=lfs -text
+checkpoints/*.bin filter=lfs diff=lfs merge=lfs -text

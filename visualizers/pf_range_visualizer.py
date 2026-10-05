@@ -12,7 +12,7 @@ from pokerkit import Hand
 from pf_mccfr import Node
 
 ACTION = '4bet'
-PATH = r'C:\Users\login\RANDOM_CODE\wpt_bot\FULLGAME_10m_iters.pkl'
+PATH = _ROOT / 'checkpoints' / 'v1.pkl'
 RANKS = "AKQJT98765432"
 rank_to_idx = {r: i for i, r in enumerate(RANKS)}
 

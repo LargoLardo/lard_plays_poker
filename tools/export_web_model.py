@@ -16,7 +16,7 @@ from full_game_mccfr import Node  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("source", nargs="?", default=ROOT / "FULLGAME_10m_iters.pkl")
+    parser.add_argument("source", nargs="?", default=ROOT / "checkpoints" / "v1.pkl")
     parser.add_argument("output", nargs="?", default=ROOT / "public" / "preflop-model.json")
     parser.add_argument(
         "--postflop-output",

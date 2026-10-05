@@ -99,7 +99,7 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(restored.times_visited, 7)
         self.assertEqual(restored.clone().strategy_sum, node.strategy_sum)
         # The bundled file records __main__.Node and must remain loadable.
-        old = load_nodes('FULLGAME_10m_iters.pkl')
+        old = load_nodes('checkpoints/v1.pkl')
         self.assertTrue(old)
         self.assertTrue(all(isinstance(node, TrainingNode) for node in old.values()))
 

@@ -49,12 +49,15 @@ def checkpoints(root):
                     continue
                 nodes, = struct.unpack('<Q', row)
         relative = path.relative_to(root.resolve()).as_posix()
-        label = relative.removesuffix(path.suffix)
+        version = 'V3' if path.suffix == '.bin' and magic == b'LARDCPP5' else 'V2' if path.suffix == '.bin' else 'V1'
+        label = f'{version} · {relative.removesuffix(path.suffix)}'
         if iterations is not None:
-            label = f'{iterations / 1_000_000:g}M · {label}'
+            label = f'{version} · {iterations / 1_000_000:g}M'
+            if path.name not in ('v2.bin', 'v3.bin', 'full-v4.bin', 'full-v5.bin') and not path.stem.startswith('iter-'):
+                label += f' · {path.stem}'
         key = checkpoint_id(path, root.resolve(), path.stat())
         records.append(dict(id=hashlib.sha256(relative.encode()).hexdigest()[:16], version=key,
-                            label=label, source=path, iterations=iterations,
+                            label=label, source=path, sourceRoot=root.resolve(), iterations=iterations,
                             native=path.suffix == '.bin' and magic == b'LARDCPP5',
                             totalNodes=nodes if path.suffix == '.bin' else None,
                             preflop=f'/api/nodesets/{key}/preflop-model.json',
@@ -72,13 +75,21 @@ class NodesetServer(ThreadingHTTPServer):
         self.inference_version = None
         super().__init__(address, Handler)
 
+    def catalog(self):
+        roots = [self.nodesets]
+        if self.nodesets == ROOT / 'nodesets':
+            roots.append(ROOT / 'checkpoints')
+        entries = [entry for root in roots for entry in checkpoints(root)
+                   if entry['source'] != ROOT / 'checkpoints/v1.pkl']
+        return sorted(entries, key=lambda item: (-(item['iterations'] or 0), item['label']))
+
     def export(self, key):
         # Export only the selected model, once per saved checkpoint version.
         with self.export_lock:
             target = self.cache / key
             if (target / 'postflop-model.json').exists() and (target / 'preflop-model.json').exists():
                 return target
-            entry = next((item for item in checkpoints(self.nodesets) if item['version'] == key), None)
+            entry = next((item for item in self.catalog() if item['version'] == key), None)
             if entry is None:
                 raise FileNotFoundError('Checkpoint changed or was removed; refresh the page.')
             self.cache.mkdir(parents=True, exist_ok=True)
@@ -87,7 +98,7 @@ class NodesetServer(ThreadingHTTPServer):
                 source = entry['source']
                 copied = temporary / ('checkpoint' + source.suffix)
                 with source.open('rb') as original, copied.open('wb') as output:
-                    if checkpoint_id(source, self.nodesets, os.fstat(original.fileno())) != key:
+                    if checkpoint_id(source, entry['sourceRoot'], os.fstat(original.fileno())) != key:
                         raise FileNotFoundError('Checkpoint changed; refresh the page.')
                     shutil.copyfileobj(original, output)
                 exported = temporary / 'web'
@@ -125,9 +136,9 @@ class NodesetServer(ThreadingHTTPServer):
 
     def decision(self, key, line):
         with self.inference_lock:
-            entry = next((item for item in checkpoints(self.nodesets) if item['id'] == key and item['native']), None)
+            entry = next((item for item in self.catalog() if item['id'] == key and item['native']), None)
             if entry is None:
-                raise ValueError('Choose an available V5 checkpoint')
+                raise ValueError('Choose an available V3 checkpoint')
             if self.inference_version != entry['version'] or self.inference_process is None or self.inference_process.poll() is not None:
                 self.stop_inference()
                 memory_mb = max(256, (entry['source'].stat().st_size * 8 + 1048575) // 1048576)
@@ -164,8 +175,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlsplit(self.path).path
         try:
             if path == '/api/nodesets':
-                items = [{k: v for k, v in item.items() if k != 'source'}
-                         for item in checkpoints(self.server.nodesets)]
+                items = [{k: v for k, v in item.items() if k not in ('source', 'sourceRoot')}
+                         for item in self.server.catalog()]
                 self.send_bytes(json.dumps(items).encode(), 'application/json')
             elif path.startswith('/api/nodesets/'):
                 parts = path.split('/')
@@ -206,8 +217,8 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ValueError('Choose an even hand count between 2 and 1,000,000')
             if type(seed) is not int or not 0 <= seed <= 2**32 - 1:
                 raise ValueError('Seed must be 0..4294967295')
-            sources = {item['id']: item['source'] for item in checkpoints(self.server.nodesets)}
-            sources['bundled'] = ROOT / 'FULLGAME_10m_iters.pkl'
+            sources = {item['id']: item['source'] for item in self.server.catalog()}
+            sources['bundled'] = ROOT / 'checkpoints/v1.pkl'
             sources.update({f'baseline:{name}': f'baseline:{name}' for name in ('random', 'call', 'pot')})
             selected = [sources.get(request.get(label)) for label in ('a', 'b')]
             if any(path is None for path in selected):
@@ -221,7 +232,7 @@ class Handler(SimpleHTTPRequestHandler):
             command = [python, str(ROOT / 'agent_arena.py'), *map(str, selected),
                        '--hands', str(hands), '--seed', str(seed)]
             for label, path in zip(('a', 'b'), selected):
-                if path == ROOT / 'FULLGAME_10m_iters.pkl':
+                if path == ROOT / 'checkpoints/v1.pkl':
                     command.append(f'--swap-{label}-legacy-positions')
             result = subprocess.run(command, check=True, capture_output=True)
             self.send_bytes(result.stdout, 'application/json')

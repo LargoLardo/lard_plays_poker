@@ -14,7 +14,7 @@ import pickle
 import os
 import shutil
 
-PATH = r'C:\Users\login\RANDOM_CODE\wpt_bot\FULLGAME_10m_iters.pkl'
+PATH = _ROOT / 'checkpoints' / 'v1.pkl'
 PATH_2 = r''
 
 def safe_name(s):

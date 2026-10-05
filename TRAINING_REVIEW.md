@@ -101,7 +101,7 @@ decisions. Exact selfplay produces zero paired gain and zero translation.
 Local evidence stays under ignored `artifacts/`: `v5-training*.log`,
 `v5-variant-benchmark.json`, `v5-linear-vanilla-seed*.json`,
 `v5-v4-500samples.json`, baseline reports, and `audit-v5-1m.json`.
-The local `nodesets/cpp/full-v5.bin` and its snapshots remain outside Git.
+The full checkpoints live in `checkpoints/`; iteration snapshots remain outside Git.
 
 ### Checks and remaining limits
 
@@ -133,7 +133,7 @@ reference solver; it does not measure V5 Hold'em exploitability.
 ## Earlier Python and V4 review
 
 Reviewed October 4, 2026: `pf_mccfr.py`, `full_game_mccfr.py`, the standalone C++
-trainer in both modes, the bundled `FULLGAME_10m_iters.pkl`, and local C++ v1/v2/v3/v4
+trainer in both modes, the bundled `checkpoints/v1.pkl`, and local C++ v1/v2/v3/v4
 checkpoints. Original models and the Python implementations are preserved.
 
 External-sampling MCCFR is a sound foundation for heads-up, zero-sum poker.
@@ -287,7 +287,7 @@ from 1 to 256, with `0` detecting available logical CPUs.
 
 ## Audit of the original saved model
 
-`FULLGAME_10m_iters.pkl` contains **56,143 nodes**. Its name indicates 10M
+`checkpoints/v1.pkl` contains **56,143 nodes**. Its name indicates 10M
 iterations, but the legacy pickle records neither an iteration count nor the
 sample count. All inspected numeric values are finite and strategy weights are
 nonnegative. The table below counts recorded visits, not independent samples:
@@ -388,14 +388,14 @@ variants: higher throughput alone does not establish convergence per second.
 Start a separate corrected native run:
 
 ```bash
-./cpp/run.sh --iterations 1000000 --samples 100 --memory-mb 256 --output nodesets/cpp/full-v4.bin
+./cpp/run.sh --iterations 1000000 --samples 100 --memory-mb 256 --output checkpoints/v2.bin
 ```
 
 Read-only audits support trusted Python pickles and native v1/v2/v3/v4 checkpoints:
 
 ```bash
-venv/bin/python tools/audit_model.py FULLGAME_10m_iters.pkl --swap-legacy-positions --output artifacts/audit-bundled.json
-venv/bin/python tools/audit_model.py nodesets/cpp/full-v4.bin --output artifacts/audit-native.json
+venv/bin/python tools/audit_model.py checkpoints/v1.pkl --swap-legacy-positions --output artifacts/audit-bundled.json
+venv/bin/python tools/audit_model.py checkpoints/v2.bin --output artifacts/audit-native.json
 ```
 
 Validation includes 31 Python/native tests and browser policy checks, with

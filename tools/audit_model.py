@@ -139,7 +139,7 @@ def audit(source, swap_positions=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('source', nargs='?', default='FULLGAME_10m_iters.pkl')
+    parser.add_argument('source', nargs='?', default='checkpoints/v1.pkl')
     parser.add_argument('--swap-legacy-positions', action='store_true')
     parser.add_argument('--output', help='Optional JSON report path')
     args = parser.parse_args()

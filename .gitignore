@@ -5,13 +5,12 @@ docs
 debug_logs
 loaded_nodes
 game_log.txt
-nodesets/*
-!nodesets/cpp/
-nodesets/cpp/*
-!nodesets/cpp/full-v4.bin
-!nodesets/cpp/full-v5.bin
+nodesets
+checkpoints/*-snapshots/
 node_modules
 .vercel
 public/table-scene.bundle.js
+public/models/
+public/nodesets.json
 artifacts/
 cpp/build/

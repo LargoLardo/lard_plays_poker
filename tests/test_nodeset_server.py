@@ -2,9 +2,11 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -14,6 +16,20 @@ from tools.serve import NodesetServer, checkpoints
 
 
 class NodesetServerTests(unittest.TestCase):
+    def test_default_catalog_includes_committed_models_without_duplicating_v1(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            committed = root / 'checkpoints'
+            committed.mkdir()
+            (committed / 'v1.pkl').write_bytes(b'bundled legacy')
+            for name, magic in (('v2', b'LARDCPP4'), ('v3', b'LARDCPP5')):
+                (committed / (name + '.bin')).write_bytes(struct.pack('<8s4I2Q', magic, 0, 32, 1, 64, 500_000_000, 1))
+            with patch('tools.serve.ROOT', root):
+                with NodesetServer(('127.0.0.1', 0), nodesets=root / 'nodesets', cache=root / 'cache') as server:
+                    entries = server.catalog()
+                    self.assertEqual({item['label'] for item in entries}, {'V2 · 500M', 'V3 · 500M'})
+                    self.assertTrue(all(item['sourceRoot'] == committed for item in entries))
+
     def test_v5_native_inference_lifecycle_and_baselines(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -47,6 +63,8 @@ class NodesetServerTests(unittest.TestCase):
                 self.assertEqual(len(entries), 1)
                 entry = entries[0]
                 self.assertTrue(entry['native'])
+                self.assertTrue(entry['label'].startswith('V3 · '))
+                self.assertNotIn('sourceRoot', entry)
                 self.assertGreater(entry['totalNodes'], 0)
                 with urlopen(address + entry['preflop'], timeout=20) as response:
                     rows = json.load(response)
