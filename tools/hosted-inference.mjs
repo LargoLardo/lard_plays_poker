@@ -7,6 +7,19 @@ import { createInterface } from "node:readline";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 
+export async function unpackCheckpoint(directory, temporary) {
+  await mkdir(temporary, { recursive:true });
+  const checkpoint = join(temporary, "v3.bin");
+  try {
+    await pipeline(createReadStream(join(directory, "v3.bin.gz")), createGunzip(), createWriteStream(`${checkpoint}.tmp`));
+    await rename(`${checkpoint}.tmp`, checkpoint);
+  } catch (error) {
+    await rm(`${checkpoint}.tmp`, { force:true });
+    throw error;
+  }
+  return checkpoint;
+}
+
 export function decisionLine(body) {
   const { nodeset, hero, board, history, actor, street } = body || {};
   const card = (value) => typeof value === "string" && /^[2-9TJQKA][shdc]$/.test(value);
@@ -35,16 +48,7 @@ export class HostedInference {
   async start() {
     if (this.engine && this.engine.exitCode === null && !this.engine.killed) return;
     if (!this.checkpoint) {
-      await mkdir(this.temporary, { recursive:true });
-      const checkpoint = join(this.temporary, "v3.bin");
-      try {
-        await pipeline(createReadStream(join(this.directory, "v3.bin.gz")), createGunzip(), createWriteStream(`${checkpoint}.tmp`));
-        await rename(`${checkpoint}.tmp`, checkpoint);
-      } catch (error) {
-        await rm(`${checkpoint}.tmp`, { force:true });
-        throw error;
-      }
-      this.checkpoint = checkpoint;
+      this.checkpoint = await unpackCheckpoint(this.directory, this.temporary);
     }
     const nativeName = `train_v5${process.platform === "win32" ? ".exe" : ""}`;
     this.engine = spawn(join(this.directory, nativeName), ["--resume", this.checkpoint, "--infer",

@@ -64,7 +64,8 @@ net BB, BB/100, an approximate 95% interval based on duplicate pairs, wins/losse
 ties, and trained-node coverage. It uses the saved average strategies directly.
 Missing or unaveraged nodes use uniform legal actions; preflop-only agents
 check/call later streets. The bundled legacy model gets its seat correction
-automatically. Arena runs through the same local server.
+automatically. Arena runs through the local server or the hosted C++ endpoint.
+Hosted matches support up to 100,000 hands; local matches support up to 1,000,000.
 
 For a standalone match and a saved report, use the new `agent_arena.py`:
 
@@ -111,7 +112,11 @@ compressed checkpoint into temporary storage once per instance and shares one
 warm native process across requests; the first V3 decision can take longer.
 The build checks that its bundle fits the standard function package budget.
 Git LFS pointers are downloaded and checksum-verified during the build if
-Vercel's Git LFS setting is off. Arena matches continue to run locally.
+Vercel's Git LFS setting is off. `api/arena.js` runs duplicate-deal matches using
+the full V1/V2/V3 policies and the same native arena as the CLI. V3 mirror
+matches share one read-only policy table to stay within the hosted memory
+budget. One match runs at a time per function instance; timed-out matches return
+an error rather than partial results.
 
 The compact browser model can be regenerated after training with:
 

@@ -234,6 +234,19 @@ for (const row of JSON.parse(data)) {
         self.assertEqual(cross['b']['model_version'], 4)
         self.assertEqual(cross['a']['feature_samples'], 32, 'Arena samples cannot change frozen V5 buckets')
 
+    def test_hosted_v1_export_preserves_original_strategy_weights(self):
+        from agent_arena import python_policy
+        from tools.export_arena_policy import export
+        source = Path('checkpoints/v1.pkl')
+        original = self.directory / 'original-v1.policy'
+        hosted = self.directory / 'hosted-v1.policy'
+        python_policy(source, original)
+        export(source, hosted)
+        expected, actual = original.read_bytes(), hosted.read_bytes()
+        self.assertEqual(actual[:20], expected[:20])
+        self.assertEqual(actual[28:], expected[28:], 'Every bucket, strategy weight and visit count is unchanged')
+        self.assertEqual(struct.unpack_from('<Q', actual, 20)[0], 10_000_000)
+
 
 if __name__ == '__main__':
     unittest.main()

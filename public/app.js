@@ -791,13 +791,18 @@ try {
 if (!localCatalog) {
   try {
     const response = await fetch("/nodesets.json");
-    if (response.ok) nodesets.push(...await response.json());
+    if (response.ok) {
+      nodesets.push(...await response.json());
+      ui.arenaRun.disabled = false;
+      ui.arenaHands.max = "100000";
+      ui.arenaStatus.textContent = "Choose two checkpoints to compare. Up to 100,000 hands per match.";
+    }
   } catch (_) { /* Older static builds still offer V1. */ }
 }
 ui.nodesetSelect.replaceChildren(...nodesets.map((item) => new Option(item.label, item.id)));
 const arenaChoices = [...nodesets, { id:"baseline:random", label:"Random legal bet sizes" }, { id:"baseline:call", label:"Always check/call" }, { id:"baseline:pot", label:"Random actions with pot bets" }];
 for (const select of [ui.arenaA, ui.arenaB]) select.replaceChildren(...arenaChoices.map((item) => new Option(item.label, item.id)));
-const latest = nodesets[1];
+const latest = nodesets.reduce((best, item) => (item.iterations || 0) > (best?.iterations || 0) ? item : best, null);
 if (latest) {
   ui.arenaA.value = latest.id;
   ui.arenaB.value = nodesets.find((item) => item.id !== latest.id && item.iterations && item.iterations !== latest.iterations)?.id || "bundled";

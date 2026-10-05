@@ -28,4 +28,5 @@ for (const item of catalog) {
   } else if (!Object.keys(postflop).length) throw new Error("V2 has no postflop policy");
 }
 await Promise.all([`artifacts/hosted/train_v5${process.platform === "win32" ? ".exe" : ""}`, "artifacts/hosted/v3.bin.gz"].map((file) => access(file)));
+await Promise.all([`artifacts/hosted/arena${process.platform === "win32" ? ".exe" : ""}`, "artifacts/hosted/v1.policy", "artifacts/hosted/v2.bin"].map((file) => access(file)));
 console.log("V1, V2, and V3 are available in hosted builds.");

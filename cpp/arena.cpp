@@ -11,7 +11,7 @@ struct Coverage {
 
 struct ArenaAgent {
     Trainer policy;
-    std::unique_ptr<v5::Model> modern;
+    std::shared_ptr<v5::Model> modern;
     v5::CardCache cache;
     v5::Position observed;
     bool observation_available = true;
@@ -20,7 +20,7 @@ struct ArenaAgent {
     Coverage coverage;
     uint64_t wins = 0, losses = 0, ties = 0;
     double net = 0;
-    ArenaAgent(const fs::path& path, size_t budget, bool swap)
+    ArenaAgent(const fs::path& path, size_t budget, bool swap, std::shared_ptr<v5::Model> shared = {})
         : policy(false, 100, 1, budget, 0), swap_positions(swap) {
         if (path.string().rfind("baseline:", 0) == 0) {
             baseline = path.string().substr(9);
@@ -33,8 +33,12 @@ struct ArenaAgent {
         if (!in) throw std::runtime_error("Cannot read checkpoint " + path.string());
         if (std::string(magic, 8) == "LARDCPP5") {
             in.close();
-            modern = std::make_unique<v5::Model>(budget, std::min(size_t(64) * 1048576, budget / 8));
-            v5::load(*modern, path); cache.limit = modern->cache_entries;
+            modern = std::move(shared);
+            if (!modern) {
+                modern = std::make_shared<v5::Model>(budget, std::min(size_t(64) * 1048576, budget / 8));
+                v5::load(*modern, path);
+            }
+            cache.limit = modern->cache_entries;
         } else if (std::string(magic, 8) == "LARDPOL1") {
             auto schema = read_uint(in, 4), mode = read_uint(in, 4), samples = read_uint(in, 4);
             auto iterations = read_uint(in, 8), count = read_uint(in, 8);
@@ -237,7 +241,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Choose two checkpoints and an even hand count of at least 2");
         if (memory_mb < 4 || memory_mb > 1'048'576) throw std::runtime_error("Invalid memory budget");
         ArenaAgent a(a_path, size_t(memory_mb) * 1024 * 1024, swap_a);
-        ArenaAgent b(b_path, size_t(memory_mb) * 1024 * 1024, swap_b);
+        // Mirrored matches share the large read-only policy, with separate actions/statistics.
+        ArenaAgent b(b_path, size_t(memory_mb) * 1024 * 1024, swap_b, a_path == b_path ? a.modern : nullptr);
         if (!samples) samples = std::max(a.samples(), b.samples());
         Traversal deal(false, samples, seed, 0);
         uint64_t pairs = 0;

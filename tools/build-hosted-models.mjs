@@ -54,10 +54,19 @@ for (const [id, engine, magic] of [["v2", "v4", "LARDCPP4"], ["v3", "v5", "LARDC
 }
 await copyFile(`cpp/build/${nativeName}`, `${hosted}/${nativeName}`);
 await chmod(`${hosted}/${nativeName}`, 0o755);
+const arenaName = `arena${process.platform === "win32" ? ".exe" : ""}`;
+execFileSync(python, ["-c", "from cpp.run import build; build(arena=True)"], { stdio:"inherit" });
+await copyFile(`cpp/build/${arenaName}`, `${hosted}/${arenaName}`);
+await chmod(`${hosted}/${arenaName}`, 0o755);
+await copyFile("checkpoints/v2.bin", `${hosted}/v2.bin`);
+execFileSync(python, ["tools/export_arena_policy.py", "checkpoints/v1.pkl", `${hosted}/v1.policy`], { stdio:"inherit" });
 await pipeline(createReadStream("checkpoints/v3.bin"), createGzip(), createWriteStream(`${hosted}/v3.bin.gz`));
 // Keep the native function below Vercel's standard 250 MiB package ceiling.
 if ((await stat(`${hosted}/v3.bin.gz`)).size + (await stat(`${hosted}/${nativeName}`)).size > 240 * 1024 * 1024) {
   throw new Error("The hosted V3 checkpoint exceeds the function package budget.");
 }
+const arenaBytes = (await Promise.all(["v3.bin.gz", "v2.bin", "v1.policy", arenaName].map(async (name) => (await stat(`${hosted}/${name}`)).size)))
+  .reduce((total, bytes) => total + bytes, 0);
+if (arenaBytes > 240 * 1024 * 1024) throw new Error("The hosted arena exceeds the function package budget.");
 await writeFile("public/nodesets.json", JSON.stringify(catalog));
 console.log(`Hosted models ready: V1 · 10M, ${catalog.map((item) => item.label).join(", ")}.`);
