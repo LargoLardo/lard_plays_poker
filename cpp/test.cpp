@@ -2,7 +2,27 @@
 #include "trainer.cpp"
 #include <cassert>
 
+void rng_tests() {
+    // Captured with macOS libc++: seed 1, then discard 900 outputs.
+    std::ifstream fixture(fs::path(__FILE__).parent_path() / "fixtures/rng-libcxx.txt");
+    std::string text; std::getline(fixture, text); assert(fixture);
+    std::mt19937_64 restored, expected(1);
+    load_rng(restored, text);
+    expected.discard(900);
+    for (int i = 0; i < 1000; ++i) assert(restored() == expected());
+    std::ostringstream native; native << expected;
+    load_rng(restored, native.str());
+    for (int i = 0; i < 1000; ++i) assert(restored() == expected());
+    for (const auto& invalid : {std::string{}, text.substr(0, text.rfind(' ')), text + " invalid"}) {
+        bool rejected = false;
+        try { load_rng(restored, invalid); } catch (const std::runtime_error&) { rejected = true; }
+        assert(rejected);
+    }
+    std::cout << "macOS checkpoint RNG sequence and native round-trip checks passed\n";
+}
+
 void unit_tests() {
+    rng_tests();
     assert(sizeof(Entry) <= 64);
     State state;
     assert(state.actor == 1 && state.to_call() == 1);
@@ -118,6 +138,7 @@ void snapshot(std::ostream& out, const State& state, const Cards& cards) {
 
 int main(int argc, char** argv) {
     if (argc == 1) { unit_tests(); return 0; }
+    if (argc == 2 && std::string(argv[1]) == "rng") { rng_tests(); return 0; }
     std::string line;
     while (std::getline(std::cin, line)) {
         std::istringstream in(line);

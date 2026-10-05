@@ -6,6 +6,25 @@ permissions:
   contents: read
 
 jobs:
+  hosted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Load macOS checkpoint RNG on Linux
+        run: python cpp/run.py --test rng
+      - name: Build hosted models from committed checkpoints
+        run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Native inference parity and hosted browser checks
+        run: npm run test:hosted
   training:
     runs-on: ${{ matrix.os }}
     strategy:

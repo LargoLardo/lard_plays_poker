@@ -287,8 +287,9 @@ inline void load(Model& model, const fs::path& path) {
     model.linear = bool(linear);
     auto length = read_uint(in, 4);
     if (length > 20'000 || count > model.maximum || !model.nodes.prepare(size_t(count))) throw std::runtime_error("V5 checkpoint exceeds memory/node budget");
-    std::string text(size_t(length), '\0'); in.read(text.data(), std::streamsize(length)); std::istringstream rng(text);
-    if (!in || !(rng >> model.rng)) throw std::runtime_error("Invalid V5 RNG state");
+    std::string text(size_t(length), '\0'); in.read(text.data(), std::streamsize(length));
+    if (!in) throw std::runtime_error("Truncated V5 RNG state");
+    load_rng(model.rng, text);
     model.abstraction = read_abstraction(in);
     if (samples != uint64_t(model.abstraction.samples)) throw std::runtime_error("Inconsistent V5 features");
     for (uint64_t i = 0; i < count; ++i) {

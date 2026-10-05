@@ -386,6 +386,22 @@ void save_snapshot(const Trainer& trainer, const fs::path& output) {
     save(trainer, path);
     std::cout << "Saved snapshot " << path << '\n';
 }
+void load_rng(std::mt19937_64& rng, const std::string& text) {
+    std::istringstream state(text);
+    bool parsed = bool(state >> rng);
+#ifdef __GLIBCXX__
+    // libc++/MSVC write 312 rolling state words; libstdc++ also needs a position.
+    // An exhausted buffer preserves the rolling state's next outputs on Linux.
+    if (!parsed) {
+        state.clear();
+        state.str(text + " " + std::to_string(std::mt19937_64::state_size));
+        parsed = bool(state >> rng);
+    }
+#endif
+    if (!parsed) throw std::runtime_error("Invalid checkpoint RNG state");
+    state >> std::ws;
+    if (!state.eof()) throw std::runtime_error("Trailing checkpoint RNG data");
+}
 void load(Trainer& trainer, const fs::path& path, bool mode_set, bool samples_set, bool reset_average = false,
           bool workers_set = false, bool chunk_set = false) {
     std::ifstream in(path, std::ios::binary);
@@ -410,8 +426,8 @@ void load(Trainer& trainer, const fs::path& path, bool mode_set, bool samples_se
     if (length > 20'000 || count > trainer.max_nodes || !trainer.nodes.prepare(size_t(count)))
         throw std::runtime_error("Checkpoint exceeds memory/node limit or has invalid metadata");
     std::string text(size_t(length), '\0'); in.read(text.data(), std::streamsize(length));
-    std::istringstream state(text);
-    if (!in || !(state >> trainer.rng)) throw std::runtime_error("Invalid checkpoint RNG state");
+    if (!in) throw std::runtime_error("Truncated checkpoint RNG state");
+    load_rng(trainer.rng, text);
     for (uint64_t i = 0; i < count; ++i) {
         auto key = uint32_t(read_uint(in, 4));
         int street = (key >> 17) & 3, hand = key & 65535;
