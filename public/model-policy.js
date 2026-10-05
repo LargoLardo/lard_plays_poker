@@ -210,6 +210,34 @@ export function modelActionMask(game, player = game.agent) {
   return 2 | (game.bets[player] < high ? 1 : 0) | (canRaise ? 4 : 0);
 }
 
+// V5 inference runs natively; these are the same five action sizes applied to
+// the actual browser stacks, including legal/duplicate-size filtering.
+export function v5ActionAmounts(game, player = game.agent) {
+  const high = Math.max(...game.bets);
+  const maximum = game.stacks[player] + game.bets[player];
+  const pot = game.pot + game.bets[0] + game.bets[1] + high - game.bets[player];
+  const raises = game.histories[game.street].filter((action) => action === "raise").length;
+  const rounded = (value) => Math.min(maximum, roundEven(value * 2) / 2);
+  return [0, 0, rounded(game.street === 0 ? high * (raises ? 3 : 2.5) : high + pot * .5), rounded(high + pot), maximum];
+}
+
+export function v5ActionMask(game, player = game.agent) {
+  const high = Math.max(...game.bets);
+  const maximum = game.stacks[player] + game.bets[player];
+  const effective = Math.min(maximum, game.stacks[1 - player] + game.bets[1 - player]);
+  const minimum = Math.min(effective, high + game.lastRaise);
+  const raises = game.histories[game.street].filter((action) => action === "raise").length;
+  const amounts = v5ActionAmounts(game, player);
+  let mask = 2 | (game.bets[player] < high ? 1 : 0);
+  for (let action = 2; action < 5; action++) {
+    if (action !== 4 && raises >= 2) continue;
+    if (game.stacks[1 - player] <= 0 || maximum <= high || amounts[action] <= high || amounts[action] < minimum) continue;
+    if (amounts.slice(2, action).some((amount, index) => (mask & (1 << (index + 2))) && amount === amounts[action])) continue;
+    mask |= 1 << action;
+  }
+  return mask;
+}
+
 function sizeBucket(toCall, pot) {
   const ratio = toCall / pot;
   if (ratio < .4) return "small";

@@ -1,4 +1,4 @@
-import { bestHand, blendSparseStrategy, buildPostflopBucket, compareScore, findPreflopStrategy, modelActionMask, modelRaiseTo, PostflopStrategy } from "./model-policy.js";
+import { bestHand, blendSparseStrategy, buildPostflopBucket, compareScore, findPreflopStrategy, modelActionMask, modelRaiseTo, PostflopStrategy, v5ActionAmounts, v5ActionMask } from "./model-policy.js";
 
 const RANKS = "23456789TJQKA";
 const SUITS = "cdhs";
@@ -103,6 +103,7 @@ function newHand() {
     stacks, committed: [0, 0], bets: [0, 0], pot: 0,
     user, agent, actor: 1, street: 0,
     pending: new Set([0, 1]), histories: [[], [], [], []], lastRaise: 1,
+    publicHistory: [],
     finished: false, reveal: false, lastAction: "Blinds posted", result: "", winner: null,
     nodeset: activeNodeset, preflopModel: model, postflopModel: postflopStrategy,
   };
@@ -181,6 +182,7 @@ function act(kind, raiseTo = null) {
   const call = toCall(player);
   if (kind === "fold") {
     if (call <= 0) return;
+    game.publicHistory.push([0, 0, 0]);
     game.histories[game.street].push("fold");
     game.lastAction = `${name(player)} folds`;
     finishHand(1 - player, "won by fold");
@@ -190,12 +192,15 @@ function act(kind, raiseTo = null) {
     const maximum = maxRaiseTo();
     const target = Math.max(minRaiseTo(), Math.min(Number(raiseTo), maximum));
     const oldHigh = Math.max(...game.bets);
+    const potAfterCall = game.pot + game.bets[0] + game.bets[1] + call;
+    game.publicHistory.push([2, (target - oldHigh) / potAfterCall, Number(target === maximum)]);
     pay(player, target - game.bets[player]);
     game.lastRaise = Math.max(game.lastRaise, target - oldHigh);
     game.pending = new Set([1 - player]);
     game.histories[game.street].push("raise");
     game.lastAction = `${name(player)} raises to ${fmt(target)}`;
   } else {
+    game.publicHistory.push([1, 0, 0]);
     pay(player, call);
     game.pending.delete(player);
     game.histories[game.street].push("check/call");
@@ -530,12 +535,12 @@ function logAgentDecision(context, frequencies, decision) {
   console.log("Strategy source:", context.source);
   console.log(
     `Action frequencies: Fold ${(frequencies[0] * 100).toFixed(2)}% | `
-    + `Call ${(frequencies[1] * 100).toFixed(2)}% | Raise ${(frequencies[2] * 100).toFixed(2)}%`,
+    + `Call ${(frequencies[1] * 100).toFixed(2)}% | Raise ${(frequencies.slice(2).reduce((sum, value) => sum + value, 0) * 100).toFixed(2)}%`,
   );
   console.table({
     Fold: { frequency:`${(frequencies[0] * 100).toFixed(2)}%` },
     Call: { frequency:`${(frequencies[1] * 100).toFixed(2)}%` },
-    Raise: { frequency:`${(frequencies[2] * 100).toFixed(2)}%` },
+    Raise: { frequency:`${(frequencies.slice(2).reduce((sum, value) => sum + value, 0) * 100).toFixed(2)}%` },
   });
   console.log("Ultimate decision:", decision);
   console.groupEnd();
@@ -544,8 +549,33 @@ function logAgentDecision(context, frequencies, decision) {
 function scheduleAgent() {
   render();
   const scheduledGame = game;
-  window.setTimeout(() => {
+  window.setTimeout(async () => {
     if (game !== scheduledGame || game.finished || game.actor !== game.agent) return;
+    if (game.nodeset?.native) {
+      let report;
+      try {
+        const response = await fetch("/api/decision", {
+          method:"POST", headers:{ "Content-Type":"application/json" },
+          body:JSON.stringify({ nodeset:game.nodeset.id, hero:game.hole[game.agent], board:game.board, history:game.publicHistory, actor:game.agent, street:game.street }),
+        });
+        report = await response.json();
+        if (!response.ok) throw new Error(report.error || "Native inference failed");
+      } catch (error) {
+        console.warn("V5 native inference unavailable:", error);
+        report = { weights:[0, 1, 0, 0, 0], trained:false, unavailable:true };
+      }
+      if (game !== scheduledGame || game.finished || game.actor !== game.agent) return;
+      const mask = v5ActionMask(game);
+      const frequencies = normalizeWeights(report.weights.map((weight, action) => mask & (1 << action) ? weight : 0));
+      const choice = weightedChoice(frequencies);
+      const target = v5ActionAmounts(game)[choice];
+      logAgentDecision({ spot:`${STREET_NAMES[game.street]}|history:${report.history || "off-tree"}|cluster:${report.bucket ?? "none"}`,
+        source:report.trained ? `V5 averaged strategy; ${report.visits} visits${report.translated ? "; translated opposing size" : ""}` : report.unavailable ? "V5 off-tree check/call fallback" : "V5 uniform legal fallback" }, frequencies,
+        choice >= 2 ? `Raise to ${fmt(target)}` : choice === 1 ? "Check/call" : "Fold");
+      if (choice >= 2) act("raise", target);
+      else act(ACTIONS[choice]);
+      return;
+    }
     const context = game.street === 0 ? preflopDecisionContext() : postflopDecisionContext();
     const weights = [...context.weights];
     const mask = modelActionMask(game);
@@ -608,7 +638,7 @@ ui.arenaForm.addEventListener("submit", async (event) => {
       const c = agent.coverage;
       for (const value of [selected[index].label, agent.net_bb.toFixed(2), `${agent.bb_per_100.toFixed(2)} (${interval})`,
         `${agent.wins.toLocaleString()} / ${agent.losses.toLocaleString()} / ${agent.ties.toLocaleString()}`,
-        `${c.trained.toLocaleString()} / ${c.decisions.toLocaleString()}`]) {
+        `${c.trained.toLocaleString()} / ${c.decisions.toLocaleString()}${c.translated_actions ? ` · ${c.translated_actions.toLocaleString()} translated` : ""}${c.off_tree_decisions ? ` · ${c.off_tree_decisions.toLocaleString()} off-tree` : ""}`]) {
         const cell = document.createElement("td");
         cell.textContent = value;
         row.append(cell);
@@ -693,7 +723,7 @@ async function loadNodeset(id) {
     if (modelRequest !== request) return;
     model = preflopNodes;
     postflopStrategy = nextPostflop;
-    activeNodeset = { ...selected, nodeCount:Object.keys(preflopNodes).length + Object.keys(postflopNodes).length };
+    activeNodeset = { ...selected, nodeCount:selected.totalNodes ?? Object.keys(preflopNodes).length + Object.keys(postflopNodes).length };
     ui.nodesetSelect.value = id;
     ui.modelStatus.classList.add("ready");
     initializeRangeExplorer();
@@ -722,7 +752,8 @@ try {
   }
 } catch (_) { /* Static hosting still offers the bundled model. */ }
 ui.nodesetSelect.replaceChildren(...nodesets.map((item) => new Option(item.label, item.id)));
-for (const select of [ui.arenaA, ui.arenaB]) select.replaceChildren(...nodesets.map((item) => new Option(item.label, item.id)));
+const arenaChoices = [...nodesets, { id:"baseline:random", label:"Random legal bet sizes" }, { id:"baseline:call", label:"Always check/call" }, { id:"baseline:pot", label:"Random actions with pot bets" }];
+for (const select of [ui.arenaA, ui.arenaB]) select.replaceChildren(...arenaChoices.map((item) => new Option(item.label, item.id)));
 const latest = nodesets[1];
 if (latest) {
   ui.arenaA.value = latest.id;

@@ -14,6 +14,69 @@ from tools.serve import NodesetServer, checkpoints
 
 
 class NodesetServerTests(unittest.TestCase):
+    def test_v5_native_inference_lifecycle_and_baselines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nodesets, cache = root / 'nodesets', root / 'cache'
+            nodesets.mkdir()
+            binary = str(build(model='v5'))
+            asset = root / 'cards.abs'
+            subprocess.run([binary, '--build-abstraction', str(asset), '--examples', '32',
+                            '--clusters', '4,4,4', '--samples', '32', '--cluster-rounds', '1'],
+                           check=True, capture_output=True)
+            native = nodesets / 'v5.bin'
+            subprocess.run([binary, '--abstraction', str(asset), '--iterations', '100',
+                            '--workers', '2', '--chunk-size', '4', '--output', str(native)],
+                           check=True, capture_output=True)
+            (nodesets / 'truncated.bin').write_bytes(b'LARDCPP5' + bytes(24))
+            original = native.read_bytes()
+            server = NodesetServer(('127.0.0.1', 0), nodesets=nodesets, cache=cache)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            address = f'http://127.0.0.1:{server.server_port}'
+
+            def post(path, body):
+                request = Request(address + path, method='POST', data=json.dumps(body).encode(),
+                                  headers={'Content-Type': 'application/json'})
+                with urlopen(request, timeout=20) as response:
+                    return json.load(response)
+
+            try:
+                with urlopen(address + '/api/nodesets') as response:
+                    entries = json.load(response)
+                self.assertEqual(len(entries), 1)
+                entry = entries[0]
+                self.assertTrue(entry['native'])
+                self.assertGreater(entry['totalNodes'], 0)
+                with urlopen(address + entry['preflop'], timeout=20) as response:
+                    self.assertTrue(json.load(response))
+                body = dict(nodeset=entry['id'], hero=['As', 'Kd'], board=[], history=[], actor=1, street=0)
+                first = post('/api/decision', body)
+                process = server.inference_process
+                self.assertEqual(first, post('/api/decision', body))
+                self.assertIs(process, server.inference_process, 'Keep the loaded native model')
+                self.assertEqual(first['amounts'][2:], [2.5, 3, 100])
+                body.update(history=[[1, 0, 0]], actor=0)
+                self.assertFalse(post('/api/decision', body).get('unavailable', False))
+                for changes in (dict(hero=['As', 'As']), dict(actor=2), dict(street=1),
+                                dict(history=[[2, 'nan', 0]]), dict(nodeset='bundled')):
+                    with self.assertRaises(HTTPError) as failed:
+                        post('/api/decision', {**body, **changes})
+                    self.assertEqual(failed.exception.code, 400)
+                native.touch()
+                post('/api/decision', body)
+                self.assertIsNot(process, server.inference_process)
+                self.assertIsNotNone(process.poll(), 'Release the previous checkpoint process')
+                match = post('/api/arena', dict(a=entry['id'], b='baseline:random', hands=20, seed=11))
+                self.assertEqual(match['b']['baseline'], 'random')
+                current = server.inference_process
+            finally:
+                server.shutdown()
+                thread.join()
+                server.server_close()
+            self.assertIsNotNone(current.poll(), 'Closing the server releases native inference')
+            self.assertEqual(native.read_bytes(), original)
+
     def test_checkpoint_discovery_lazy_export_and_source_preservation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -163,6 +163,55 @@ try {
   assert.ok(await switching.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Arena fits on a phone");
   await switching.close();
 
+  // Native V5 uses five actions, sends visible cards/history, and ignores stale replies.
+  const native = await pageFor();
+  await native.clock.install({ time: new Date("2026-10-04T12:00:00Z") });
+  await native.clock.pauseAt(new Date("2026-10-04T12:00:01Z"));
+  await native.addInitScript(() => {
+    Math.random = () => .5;
+    localStorage.setItem("lard-plays-poker-nodeset", "v5");
+  });
+  await native.route("**/api/nodesets", (route) => route.fulfill({ json:[
+    { id:"v5", label:"Native V5", native:true, totalNodes:12345, preflop:"/v5-pre.json", postflop:"/v5-post.json" },
+  ] }));
+  await native.route("**/v5-pre.json", (route) => route.fulfill({ json:{ "AKo|SB|deep|root|~2.0bb raise|7":[0, 1, 0, 1000] } }));
+  await native.route("**/v5-post.json", (route) => route.fulfill({ json:{} }));
+  const nativeRequests = [];
+  let delayedRoute;
+  await native.route("**/api/decision", (route) => {
+    nativeRequests.push(JSON.parse(route.request().postData()));
+    if (nativeRequests.length === 2) { delayedRoute = route; return; }
+    if (nativeRequests.length === 3) return route.fulfill({ status:500, json:{ error:"Test unavailable model" } });
+    return route.fulfill({ json:{ weights:[0, 0, 1, 0, 0], trained:true, visits:4000, bucket:1, history:"42" } });
+  });
+  await native.goto(url);
+  await native.waitForSelector("#modelStatus.ready", { state:"attached" });
+  assert.match(await native.locator("#modelStatus").textContent(), /12,345 nodes/);
+  await native.locator("#raiseSlider").fill("3.5");
+  await native.locator("#raiseButton").click();
+  await native.clock.runFor(2100);
+  await native.waitForFunction(() => document.getElementById("lastAction").textContent.includes("Lard raises"));
+  assert.match(await native.locator("#lastAction").textContent(), /10.5 BB/);
+  assert.deepEqual(nativeRequests[0].history, [[2, 1.25, 0]], "Human sizes translate using pot after call");
+  assert.equal(nativeRequests[0].hero.length, 2);
+  assert.deepEqual(nativeRequests[0].board, []);
+  assert.deepEqual(Object.keys(nativeRequests[0]).sort(), ["actor", "board", "hero", "history", "nodeset", "street"]);
+  await native.locator("#callButton").click();
+  await native.clock.runFor(2100);
+  assert.ok(delayedRoute);
+  assert.equal(nativeRequests[1].board.length, 3);
+  assert.equal(nativeRequests[1].history.length, 3, "History includes both raises and the call");
+  await native.locator("#sessionMenu summary").click();
+  await native.locator("#newHandTop").click();
+  await delayedRoute.fulfill({ json:{ weights:[0, 0, 0, 0, 1], trained:true, visits:4000 } });
+  await native.waitForTimeout(20);
+  assert.equal(await native.locator("#lastAction").textContent(), "Blinds posted", "An old reply cannot act in a new hand");
+  await native.clock.runFor(2100);
+  await native.waitForFunction(() => document.getElementById("lastAction").textContent.includes("Lard calls"));
+  assert.match(await native.locator("#lastAction").textContent(), /0.5 BB/, "Native failure uses check/call");
+  assert.equal(await native.locator("#callButton").isDisabled(), false);
+  await native.close();
+
   // Force the trained action mix to check/call so every street is repeatable.
   const page = await pageFor();
   await page.addInitScript(() => { Math.random = () => .5; });
