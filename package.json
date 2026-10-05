@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "npm run build && python3 tools/serve.py",
-    "build": "node tools/build-scene.mjs && node tools/verify-web.mjs",
+    "build": "node tools/build-scene.mjs && node tools/build-hosted-models.mjs && node tools/verify-web.mjs",
     "test:web": "node tools/test-model-policy.mjs",
+    "test:hosted": "node tools/test-hosted-models.mjs",
     "test:ui": "node tools/test-card-motion.mjs && node tools/test-table.mjs"
   },
   "dependencies": {

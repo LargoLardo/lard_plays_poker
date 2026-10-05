@@ -41,7 +41,7 @@ page to discover newly saved checkpoints. The local server exports only the
 chosen checkpoint and caches its JSON under `artifacts/web-models/`; it reads
 the training files without changing them.
 
-New **V5 C++** selections use native inference with their frozen card abstraction.
+**V3** (the V5 C++ model) selections use native inference with their frozen card abstraction.
 Study shows a compact preflop projection; Play retains all five action choices
 and uses native postflop buckets. Arena also offers check/call, random legal
 sizing, and pot-bet baselines. Translated bets and off-tree decisions appear in
@@ -51,7 +51,7 @@ Study greys out nodes with fewer than **1,000 visits**. A mixed-context hand cel
 includes only nodes meeting that threshold, and the frequency summary excludes
 sparse nodes too. This affects Study display only.
 
-With a V5 checkpoint selected, enable **Advanced raises** in Study to split
+With a V3 checkpoint selected, enable **Advanced raises** in Study to split
 small, pot, and all-in raises. The summary shows their percentages **among
 raises**; hovering or tapping a hand shows its own split. Mixed strategy uses
 five colors, and the Raise view colors show the three-way split while each
@@ -69,7 +69,7 @@ automatically. Arena runs through the same local server.
 For a standalone match and a saved report, use the new `agent_arena.py`:
 
 ```bash
-python agent_arena.py nodesets/cpp/full-v4.bin nodesets/cpp/full-v4-snapshots/iter-100000000.bin --hands 100000 --seed 1 --output artifacts/arena/latest-vs-100m.json
+python agent_arena.py checkpoints/v2.bin nodesets/cpp/full-v4-snapshots/iter-100000000.bin --hands 100000 --seed 1 --output artifacts/arena/latest-vs-100m.json
 ```
 
 Both `.bin` and `.pkl` checkpoints are supported. The native engine runs the
@@ -77,7 +77,7 @@ match; Python policies are converted in a temporary directory. Inputs stay
 unchanged. Hand counts must be even. `--samples 0` (default) uses the larger
 recorded sample count, with 100 assumed for legacy Python files lacking metadata.
 Use `--fallback call` for check/call fallback instead. To compare the original
-`FULLGAME_10m_iters.pkl`, add `--swap-a-legacy-positions` or
+`checkpoints/v1.pkl`, add `--swap-a-legacy-positions` or
 `--swap-b-legacy-positions` according to its argument position. Ctrl+C finishes
 the current duplicate pair and returns a partial report. These results measure
 the selected matchup and evaluation settings.
@@ -86,8 +86,12 @@ If the scene is already built, start the same frontend directly with
 `venv/bin/python tools/serve.py` (Windows: `py -3 tools/serve.py`). C++ selections
 need the same C++17 compiler as training; Python selections need the training
 dependencies. `npm run dev` now uses this server. A plain static server or
-the deployed static site offers the bundled model; local checkpoint selection
-uses the `/api/nodesets` routes supplied by `tools/serve.py`.
+Vercel build offers **V1** (the original 10M Python model), **V2** (the C++ V4
+model), and **V3** (the C++ V5 model). The committed files are together in
+`checkpoints/v1.pkl`, `checkpoints/v2.bin`, and `checkpoints/v3.bin`. These display
+names do not change checkpoint formats or the `--model v4` / `--model v5` flags.
+Local checkpoint selection also includes iteration snapshots through the
+`/api/nodesets` routes supplied by `tools/serve.py`.
 
 Open the browser developer console while playing to inspect the agent trace.
 Each hand logs an ISO timestamp and Lard's cards; each decision logs its
@@ -99,7 +103,15 @@ table UI.
 
 `vercel.json` explicitly sets the Framework Preset to **Other** so Vercel does
 not mistake the repository's offline Python training scripts for a Python web
-application. It builds and publishes only the static `public/` directory.
+application. The build exports V2/V3 Study data to `public/models/` and a catalog
+to `public/nodesets.json`. V1/V2 play in the browser. V3 Play uses the deployed
+`api/decision.js` function, which runs the same C++ inference, frozen card
+abstraction, and full policy as the local server. The function unpacks its
+compressed checkpoint into temporary storage once per instance and shares one
+warm native process across requests; the first V3 decision can take longer.
+The build checks that its bundle fits the standard function package budget.
+Git LFS pointers are downloaded and checksum-verified during the build if
+Vercel's Git LFS setting is off. Arena matches continue to run locally.
 
 The compact browser model can be regenerated after training with:
 
@@ -137,15 +149,15 @@ For the new C++ model, build a frozen abstraction once and then train:
 ```bash
 python cpp/run.py --model v5 --build-abstraction nodesets/cpp/v5-cards.abs
 python cpp/run.py --model v5 --abstraction nodesets/cpp/v5-cards.abs \
-  --iterations 10000000 --snapshot-every 1000000 --output nodesets/cpp/full-v5.bin
+  --iterations 10000000 --snapshot-every 1000000 --output nodesets/cpp/new-v3.bin
 ```
 
 V5 defaults to all CPUs and a 4 GiB working budget. It uses deterministic suit
 canonicalization, learned card clusters, full public action histories, several
 raise sizes, and Linear MCCFR. Existing V4/Python checkpoints cannot be migrated
-into these new information sets; start fresh. The development checkout already
-has a 1M-hand V5 model; continue with `python cpp/run.py --model v5 --resume
-nodesets/cpp/full-v5.bin --iterations 10000000 --snapshot-every 1000000`.
+into these new information sets; start fresh. The checkout includes a trained
+V3 checkpoint; continue with `python cpp/run.py --model v5 --resume
+checkpoints/v3.bin --iterations 10000000 --snapshot-every 1000000`.
 See [cpp/README.md](cpp/README.md) for compiler setup, memory settings, and resume
 details. `cpp/run.sh` and the Python launcher without `--model v5` retain V4.
 
@@ -161,7 +173,9 @@ details. `cpp/run.sh` and the Python launcher without `--model v5` retain V4.
 | `visualizers/*.py` | Preflop range visualization helpers. |
 | `kuhn/*.py` | Small Kuhn poker CFR / MCCFR reference implementations. |
 | `protos/*.py` | Earlier or alternate prototypes (Hold’em setup, random sims, CFR variants). |
-| `FULLGAME_10m_iters.pkl` | Example pickled nodeset trained on 10m iterations |
+| `checkpoints/v1.pkl` | Example pickled nodeset trained on 10m iterations |
+| `checkpoints/v2.bin` | Full legacy C++ V4 model, displayed as V2. |
+| `checkpoints/v3.bin` | Full C++ V5 model, displayed as V3. |
 
 The original Python trainers stay unchanged as legacy. Install only their dependencies
 with `pip install -r requirements-training.txt`, then run:
@@ -258,7 +272,7 @@ MSVC in a Developer Command Prompt or an installed GCC/Clang compiler.
 Audit a trusted local checkpoint without changing it:
 
 ```bash
-venv/bin/python tools/audit_model.py FULLGAME_10m_iters.pkl --swap-legacy-positions
+venv/bin/python tools/audit_model.py checkpoints/v1.pkl --swap-legacy-positions
 venv/bin/python tools/audit_model.py nodesets/cpp/full.bin
 ```
 

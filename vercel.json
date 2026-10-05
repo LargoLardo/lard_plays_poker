@@ -4,5 +4,11 @@
   "buildCommand": "npm run build",
   "outputDirectory": "public",
   "cleanUrls": true,
-  "trailingSlash": false
+  "trailingSlash": false,
+  "functions": {
+    "api/decision.js": {
+      "includeFiles": "artifacts/hosted/{v3.bin.gz,train_v5}",
+      "maxDuration": 60
+    }
+  }
 }

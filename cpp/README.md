@@ -11,7 +11,7 @@ Build a frozen card abstraction once, then train:
 ```bash
 python cpp/run.py --model v5 --build-abstraction nodesets/cpp/v5-cards.abs --workers 0
 python cpp/run.py --model v5 --abstraction nodesets/cpp/v5-cards.abs \
-  --iterations 10000000 --snapshot-every 1000000 --output checkpoints/v3.bin
+  --iterations 10000000 --snapshot-every 1000000 --output nodesets/cpp/new-v3.bin
 ```
 
 The full V4 and V5 checkpoints are tracked with Git LFS. After cloning, fetch

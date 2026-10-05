@@ -27,7 +27,7 @@ let model = {};
 let postflopStrategy = new PostflopStrategy();
 let rangeMode = "all";
 let rangeSpots = [];
-const nodesets = [{ id:"bundled", label:"Bundled · 10M", preflop:"/preflop-model.json", postflop:"/postflop-model.json" }];
+const nodesets = [{ id:"bundled", label:"V1 · 10M", preflop:"/preflop-model.json", postflop:"/postflop-model.json" }];
 const NODESET_STORAGE_KEY = "lard-plays-poker-nodeset";
 let activeNodeset = null;
 let modelRequest = null;
@@ -401,7 +401,7 @@ function initializeRangeExplorer() {
   ui.advancedRaises.disabled = !activeNodeset?.native || !Object.values(model).some((row) => row.length >= 7);
   if (ui.advancedRaises.disabled) ui.advancedRaises.checked = false;
   ui.advancedRaises.parentElement.title = ui.advancedRaises.disabled
-    ? "Select a V5 checkpoint to view individual raise sizes."
+    ? "Select a V3 checkpoint to view individual raise sizes."
     : "Show the saved small, pot, and all-in raise frequencies.";
   const spots = [...new Set(Object.keys(model).map((key) => key.split("|").slice(1).join("|")))];
   const historyOrder = { root:0, limped:1, vs_open:2, vs_3bet:3, vs_4bet:4 };
@@ -595,7 +595,7 @@ function scheduleAgent() {
         report = await response.json();
         if (!response.ok) throw new Error(report.error || "Native inference failed");
       } catch (error) {
-        console.warn("V5 native inference unavailable:", error);
+        console.warn("V3 native inference unavailable:", error);
         report = { weights:[0, 1, 0, 0, 0], trained:false, unavailable:true };
       }
       if (game !== scheduledGame || game.finished || game.actor !== game.agent) return;
@@ -604,7 +604,7 @@ function scheduleAgent() {
       const choice = weightedChoice(frequencies);
       const target = v5ActionAmounts(game)[choice];
       logAgentDecision({ spot:`${STREET_NAMES[game.street]}|history:${report.history || "off-tree"}|cluster:${report.bucket ?? "none"}`,
-        source:report.trained ? `V5 averaged strategy; ${report.visits} visits${report.translated ? "; translated opposing size" : ""}` : report.unavailable ? "V5 off-tree check/call fallback" : "V5 uniform legal fallback" }, frequencies,
+        source:report.trained ? `V3 averaged strategy; ${report.visits} visits${report.translated ? "; translated opposing size" : ""}` : report.unavailable ? "V3 off-tree check/call fallback" : "V3 uniform legal fallback" }, frequencies,
         choice >= 2 ? `Raise to ${fmt(target)}` : choice === 1 ? "Check/call" : "Fold");
       if (choice >= 2) act("raise", target);
       else act(ACTIONS[choice]);
@@ -778,14 +778,22 @@ async function loadNodeset(id) {
   }
 }
 
+let localCatalog = false;
 try {
   const response = await fetch("/api/nodesets", { cache:"no-store" });
   if (response.ok) {
     nodesets.push(...await response.json());
+    localCatalog = true;
     ui.arenaRun.disabled = false;
     ui.arenaStatus.textContent = "Choose two checkpoints to compare.";
   }
-} catch (_) { /* Static hosting still offers the bundled model. */ }
+} catch (_) { /* Hosted builds provide a static checkpoint catalog below. */ }
+if (!localCatalog) {
+  try {
+    const response = await fetch("/nodesets.json");
+    if (response.ok) nodesets.push(...await response.json());
+  } catch (_) { /* Older static builds still offer V1. */ }
+}
 ui.nodesetSelect.replaceChildren(...nodesets.map((item) => new Option(item.label, item.id)));
 const arenaChoices = [...nodesets, { id:"baseline:random", label:"Random legal bet sizes" }, { id:"baseline:call", label:"Always check/call" }, { id:"baseline:pot", label:"Random actions with pot bets" }];
 for (const select of [ui.arenaA, ui.arenaB]) select.replaceChildren(...arenaChoices.map((item) => new Option(item.label, item.id)));
