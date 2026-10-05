@@ -14,8 +14,9 @@ python cpp/run.py --model v5 --abstraction nodesets/cpp/v5-cards.abs \
   --iterations 10000000 --snapshot-every 1000000 --output nodesets/cpp/full-v5.bin
 ```
 
-The local development checkout already has this asset and a 1M-hand V5 checkpoint.
-Continue it with:
+The full V4 and V5 checkpoints are tracked with Git LFS. After cloning, fetch
+them with `git lfs install` followed by `git lfs pull`. V5 embeds its card
+abstraction, so continuing a checkpoint does not require a separate asset:
 
 ```bash
 python cpp/run.py --model v5 --resume nodesets/cpp/full-v5.bin \
