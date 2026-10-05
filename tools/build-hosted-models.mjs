@@ -44,11 +44,9 @@ for (const [id, engine, magic] of [["v2", "v4", "LARDCPP4"], ["v3", "v5", "LARDC
   const totalNodes = Number(header.readBigUInt64LE(32));
   const directory = `public/models/${id}`;
   const temporary = `${hosted}/${id}-export.bin`;
-  const env = { ...process.env };
-  if (process.platform === "linux" && !env.CXX) env.CXX = "g++ -static-libstdc++ -static-libgcc";
   execFileSync(python, ["cpp/run.py", "--model", engine, "--resume", source,
     "--iterations", "0", "--memory-mb", "2048", "--output", temporary, "--export", directory,
-    ...(engine === "v5" ? ["--cache-mb", "0", "--max-nodes", "0"] : [])], { env, stdio:"inherit" });
+    ...(engine === "v5" ? ["--cache-mb", "0", "--max-nodes", "0"] : [])], { stdio:"inherit" });
   await rm(temporary);
   catalog.push({ id, label:`${id.toUpperCase()} · ${Number((iterations / 1_000_000).toFixed(3))}M`,
     iterations, totalNodes, native:engine === "v5",
