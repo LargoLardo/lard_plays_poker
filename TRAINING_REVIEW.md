@@ -1,5 +1,137 @@
 # Python and C++ training review
 
+## C++ V5 implementation and validation
+
+V5 is now the recommended native model on `feat/cpp-model-v5`. Python training
+and the original C++ trainer are legacy implementations kept separately. V5
+uses a fresh checkpoint format, `LARDCPP5`; old models remain available for
+Play, Study, Arena, export, and V4 training. No old checkpoint was migrated or
+overwritten. Commits are dated October 5, 2026, 14:15 Toronto at the user's request.
+
+V5 implements deterministic, suit-canonical visible-card features, a frozen
+offline learned abstraction embedded in every checkpoint, full public action
+history, five explicit actions with consistent legal masks, and Linear
+external-sampling MCCFR. Native inference supplies the same card buckets to
+the existing browser. The flat shared table, bounded assignment/update caches,
+transactional batches, and worker pool retain controlled memory use.
+
+The card vector combines a 16-bin future-equity CDF, eight opponent-class
+strength estimates, and eight made-hand/blocker/board features. River equity
+enumerates all 990 remaining opponent combinations. Earlier streets sample up
+to 32 runouts and opponents within each runout. CDF distance is the 1-D earth
+mover distance, and cluster updates use coordinate medians for those dimensions.
+The defaults are 50k examples/street, 256/512/256 clusters, 512 samples, and six
+rounds. Preflop retains all 169 starting-hand classes. Feature sampling uses a
+separate state-derived seed and never consumes the training RNG.
+
+Distributional and opponent-class features follow the ideas in
+[Johanson et al., Evaluating State-Space Abstractions in Extensive-Form Games](https://webdocs.cs.ualberta.ca/~mbowling/papers/13aamas-abstraction.pdf).
+This implementation uses simple rank/suitedness opponent classes rather than
+their learned OCHS classes. Its final-strength distribution is also simpler
+than the hierarchical transitions in
+[Ganzfried and Sandholm's potential-aware abstraction](https://www.cs.cmu.edu/~sandholm/potential-aware_imperfect-recall.aaai14.pdf).
+It should be described as a distribution-based abstraction with blocker
+features, rather than a reproduction of that potential-aware algorithm.
+
+The Linear update follows the sampling-compatible experiment in
+[Brown and Sandholm, Discounted Monte Carlo CFR](https://arxiv.org/html/1809.04040):
+every 10M nodes touched (including terminals), regrets and average weights are
+discounted by `n/(n+1)`. V5 applies this at successful batch boundaries and
+telescopes skipped periods. Visits are raw coverage counters. `--algorithm
+vanilla` supplies a fresh-run control; feature and algorithm settings are
+frozen on resume. This is Linear MCCFR, without clipping cumulative regrets
+as CFR+ would. The paper's sampled case motivates that choice.
+
+The finalized public tree contains 13,608 decision histories: 20 preflop,
+252 flop, 2,156 turn, and 11,180 river. With the default clusters, at most
+4,033,844 information sets fit this fixed 100-BB action tree. The node table
+stores 104-byte entries with 16-byte keys and grows without eviction. Default
+working budget is 4 GiB, including rehash peaks, cache and update allowances;
+runtime stacks and allocator overhead are additional. Default 5M cap exceeds
+this tree's upper bound. A maximal checkpoint is about 385 MiB, so retained
+snapshots need substantially more disk space than V4 snapshots.
+
+### Measured local results
+
+On the 12-CPU, 48-GiB M4 Pro, the offline default asset used about 10 MiB peak
+RSS. A fresh 100k-hand run at 12 workers/chunk 64 reached 1,611,326 nodes,
+32,412 hands/s including two snapshots, and 862 MiB peak RSS. Continuing to
+1M hands with snapshots every 250k reached 3,627,169 nodes, 47,059 additional
+hands/s, and **1,440 MiB peak RSS**. The final file is about 346 MiB. These
+short local measurements include saves and are not billion-hand projections.
+
+Three fresh Linear and vanilla runs used the same asset, 12 workers, chunk 64,
+and ten seconds of training before SIGINT finished the batch and saved. Each
+run took about 11.5 seconds including its save. Each matchup below uses
+100k hands with seat swaps and identical deals; positive values favor Linear.
+
+| Training seed | Linear hands | Vanilla hands | Linear BB/100 | Approx. 95% interval |
+|---|---:|---:|---:|---|
+| 7 | 696,576 | 704,256 | +43.08 | +29.20 to +56.97 |
+| 19 | 696,576 | 706,560 | +45.67 | +32.00 to +59.33 |
+| 31 | 672,000 | 576,768 | +62.77 | +48.35 to +77.20 |
+
+These early comparisons support retaining Linear as the default in this
+implementation. They do not establish later convergence, and the third pair
+had noticeably different throughput despite equal time budgets.
+
+The saved 1M-hand V5 model also produced the following paired results:
+
+| Opponent | Match hands | V5 BB/100 | Approx. 95% interval |
+|---|---:|---:|---|
+| V4 at 500M hands (seed 19, legacy features at 500 samples) | 100,000 | +135.03 | +120.49 to +149.56 |
+| Always check/call (seed 17) | 50,000 | +589.18 | +559.43 to +618.94 |
+| Random legal raise sizes (seed 17) | 50,000 | +349.14 | +321.53 to +376.75 |
+| Random actions with pot raises (seed 17) | 50,000 | +273.90 | +250.18 to +297.61 |
+
+V5's trained-average coverage against V4 was 99.37%; V4's was 86.21%.
+That gap matters: V5 has more betting choices, and some V4 responses fall back
+outside its original tree. V5 translated 13,299 observed actions and had 1,106
+off-tree decisions in that match. Random sizing caused 4,069 off-tree decisions
+out of 82,387 V5 decisions. Thus those match gains include action-abstraction
+and fallback effects. They are not isolated evidence that the card clusters
+alone improved play. Baselines are deliberately weak controls.
+
+The 1M-node audit found no invalid weights and all 169 SB root hand classes.
+Many deeper nodes still have few visits. V5 Study excludes individual nodes
+under 1,000 visits before combining histories into its preflop projection.
+Arena records missing/unaveraged coverage, translated actions, and off-tree
+decisions. Exact selfplay produces zero paired gain and zero translation.
+
+Local evidence stays under ignored `artifacts/`: `v5-training*.log`,
+`v5-variant-benchmark.json`, `v5-linear-vanilla-seed*.json`,
+`v5-v4-500samples.json`, baseline reports, and `audit-v5-1m.json`.
+The local `nodesets/cpp/full-v5.bin` and its snapshots remain outside Git.
+
+### Checks and remaining limits
+
+All 39 Python/native tests pass, including exact Treys river comparisons,
+suit/hidden-card invariance, every public history, native/browser action-size
+parity, serial and parallel checkpoint resume, asset freezing, malformed data,
+memory rollback, cross-model Arena, and inference-process lifecycle.
+V5 unit checks pass under AddressSanitizer, UndefinedBehaviorSanitizer, and
+ThreadSanitizer. Browser checks cover native five-action play, arbitrary human
+sizes, stale inference replies, fallback, existing streets/scene, Study, Arena,
+mobile, reduced motion, and WebGL fallback. Local native inference is exercised
+through `tools/serve.py`; Windows/MSVC and Linux execution await CI.
+
+V5 retains full **public** history but forgets earlier private buckets. Its
+card abstraction remains imperfect recall. Starting stacks are always 100 BB;
+other browser bankrolls are outside that trained game. Observed arbitrary
+raises translate to nearest abstract pot fractions. A virtual history that
+cannot follow the actual actor/street uses Play's check/call fallback or
+Arena's configured fallback. This is still an abstract game, not unrestricted
+no-limit Hold'em or a measured GTO solver.
+
+The next experiments are held-out card-abstraction validation, hierarchical
+potential-aware transitions or learned opponent classes, starting-stack
+coverage, and reduced-game best-response evaluation of the new native path.
+Regret pruning or float compression should follow measurements of convergence
+and numerical error. The existing Kuhn best-response check validates its own
+reference solver; it does not measure V5 Hold'em exploitability.
+
+## Earlier Python and V4 review
+
 Reviewed October 4, 2026: `pf_mccfr.py`, `full_game_mccfr.py`, the standalone C++
 trainer in both modes, the bundled `FULLGAME_10m_iters.pkl`, and local C++ v1/v2/v3/v4
 checkpoints. Original models and the Python implementations are preserved.

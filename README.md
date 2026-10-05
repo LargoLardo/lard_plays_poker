@@ -41,6 +41,12 @@ page to discover newly saved checkpoints. The local server exports only the
 chosen checkpoint and caches its JSON under `artifacts/web-models/`; it reads
 the training files without changing them.
 
+New **V5 C++** selections use native inference with their frozen card abstraction.
+Study shows a compact preflop projection; Play retains all five action choices
+and uses native postflop buckets. Arena also offers check/call, random legal
+sizing, and pot-bet baselines. Translated bets and off-tree decisions appear in
+its coverage results. See [V5 training and model details](cpp/README.md#v5-recommended-for-new-runs).
+
 Study greys out nodes with fewer than **1,000 visits**. A mixed-context hand cell
 includes only nodes meeting that threshold, and the frequency summary excludes
 sparse nodes too. This affects Study display only.
@@ -98,9 +104,15 @@ For node sets trained before the heads-up position mapping fix, add
 `--swap-legacy-positions`. The bundled 10M model has already been exported
 with this correction.
 
-No-limit Texas Hold’em bots trained with **external-sampling Monte Carlo CFR** (MCCFR), built on [pokerkit](https://github.com/uoft-cs/pokerkit). The main line trains **preflop-only** (`pf_mccfr.py`) and **full-street** (`full_game_mccfr.py`) abstractions using card bucketing and pickled node stores.
+No-limit Texas Hold’em bots trained with **external-sampling Monte Carlo CFR**
+(MCCFR). **C++ V5 is the recommended trainer for new models.** The Python
+trainers built on [pokerkit](https://github.com/uoft-cs/pokerkit) and native V4
+remain available as legacy implementations with their original models intact.
 
 ## Setup
+
+V5 training needs Python 3.10+ for the launcher and a C++17 compiler; it has no
+Python package dependencies. The packages below support legacy trainers and tools.
 
 1. Create a virtual environment (recommended).
 2. Install dependencies:
@@ -113,17 +125,29 @@ Key libraries: `pokerkit`, `numpy`, `torch`, `tqdm`, `networkx`.
 
 ## Running
 
-For a standalone, faster C++ trainer with a configurable memory budget, see
-[cpp/README.md](cpp/README.md). Build and train with one command:
+For the new C++ model, build a frozen abstraction once and then train:
 
 ```bash
-./cpp/run.sh --iterations 1000000 --memory-mb 256
+python cpp/run.py --model v5 --build-abstraction nodesets/cpp/v5-cards.abs
+python cpp/run.py --model v5 --abstraction nodesets/cpp/v5-cards.abs \
+  --iterations 10000000 --snapshot-every 1000000 --output nodesets/cpp/full-v5.bin
 ```
+
+V5 defaults to all CPUs and a 4 GiB working budget. It uses deterministic suit
+canonicalization, learned card clusters, full public action histories, several
+raise sizes, and Linear MCCFR. Existing V4/Python checkpoints cannot be migrated
+into these new information sets; start fresh. The development checkout already
+has a 1M-hand V5 model; continue with `python cpp/run.py --model v5 --resume
+nodesets/cpp/full-v5.bin --iterations 10000000 --snapshot-every 1000000`.
+See [cpp/README.md](cpp/README.md) for compiler setup, memory settings, and resume
+details. `cpp/run.sh` and the Python launcher without `--model v5` retain V4.
 
 | Script | Role |
 |--------|------|
-| `pf_mccfr.py` | Preflop MCCFR training (stops after preflop; payoffs from check-through). |
-| `full_game_mccfr.py` | Full-game MCCFR training through showdown. |
+| `cpp/train_v5.cpp` | Recommended full-game C++ Linear MCCFR trainer. |
+| `cpp/trainer.cpp` | Legacy native V4 trainer, kept separately. |
+| `pf_mccfr.py` | Legacy Python preflop MCCFR training (check-through payoffs). |
+| `full_game_mccfr.py` | Legacy Python full-game MCCFR training. |
 | `utils/play_hand.py` | Interactive / scripted play against a loaded strategy |
 | `utils/agent_test.py` | Local agent testing harness (paths/iterations are edited in-file). |
 | `agent_arena.py` | C++/Python checkpoint matches with duplicate deals and JSON results. |
@@ -132,7 +156,7 @@ For a standalone, faster C++ trainer with a configurable memory budget, see
 | `protos/*.py` | Earlier or alternate prototypes (Hold’em setup, random sims, CFR variants). |
 | `FULLGAME_10m_iters.pkl` | Example pickled nodeset trained on 10m iterations |
 
-The original Python trainers remain available. Install only their dependencies
+The original Python trainers stay unchanged as legacy. Install only their dependencies
 with `pip install -r requirements-training.txt`, then run:
 
 ```bash

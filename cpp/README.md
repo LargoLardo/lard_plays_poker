@@ -53,7 +53,10 @@ pot raise, and all-in. The small opening raise is 2.5 BB; later preflop raises
 are 3× the current bet. Postflop small raises are half pot. Pot sizes include
 the call, amounts round to half-BB units, and duplicate/illegal choices vanish.
 After two raises per street, only the jam raise remains. This produces **13,608
-decision histories** at 100 BB. Card abstraction still has imperfect recall;
+decision histories** at 100 BB. With the default cluster counts the node upper
+bound is **4,033,844**, below the default 5M cap; each checkpoint can approach
+385 MiB. Snapshot storage grows with the number retained. Card abstraction
+still has imperfect recall;
 preserving public history does not supply a full-game convergence guarantee.
 
 The default is **Linear external-sampling MCCFR**. After each 10M nodes touched,

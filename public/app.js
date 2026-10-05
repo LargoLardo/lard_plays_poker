@@ -409,7 +409,9 @@ function initializeRangeExplorer() {
     return { position, stack, history, size, mask };
   });
   populateRangeFilters(0);
-  ui.rangeDetail.textContent = "Hover or tap a hand to see its exact action mix.";
+  ui.rangeDetail.textContent = activeNodeset?.native
+    ? "Hover or tap a hand to see its preflop action mix."
+    : "Hover or tap a hand to see its exact action mix.";
   renderRange();
 }
 
@@ -433,7 +435,9 @@ function populateRangeFilters(startIndex) {
     filters[index].element.disabled = values.length <= 1;
   }
   const sizingCount = ui.rangeSize.options.length;
-  ui.spotCoverage.textContent = !sizingCount ? "No averaged preflop nodes yet." : sizingCount === 1
+  ui.spotCoverage.textContent = activeNodeset?.native
+    ? "Raise combines small, pot, and all-in choices. Nodes under 1,000 visits are excluded."
+    : !sizingCount ? "No averaged preflop nodes yet." : sizingCount === 1
     ? "One sizing was trained for this node; additional sizes require a wider training tree."
     : `${sizingCount} trained sizings are available for this node.`;
 }

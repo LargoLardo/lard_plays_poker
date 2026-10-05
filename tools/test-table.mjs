@@ -187,6 +187,7 @@ try {
   await native.goto(url);
   await native.waitForSelector("#modelStatus.ready", { state:"attached" });
   assert.match(await native.locator("#modelStatus").textContent(), /12,345 nodes/);
+  assert.match(await native.locator("#spotCoverage").textContent(), /Raise combines small, pot, and all-in/);
   await native.locator("#raiseSlider").fill("3.5");
   await native.locator("#raiseButton").click();
   await native.clock.runFor(2100);
