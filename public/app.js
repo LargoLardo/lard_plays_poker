@@ -1,4 +1,4 @@
-import { bestHand, blendSparseStrategy, buildPostflopBucket, compareScore, findPreflopStrategy, PostflopStrategy } from "./model-policy.js";
+import { bestHand, blendSparseStrategy, buildPostflopBucket, compareScore, findPreflopStrategy, modelActionMask, modelRaiseTo, PostflopStrategy, v5ActionAmounts, v5ActionMask } from "./model-policy.js";
 
 const RANKS = "23456789TJQKA";
 const SUITS = "cdhs";
@@ -10,20 +10,27 @@ const DISPLAY_RANKS = [...RANKS].reverse();
 const AGENT_DELAY_MS = 2_000;
 const NEXT_HAND_DELAY_MS = 8_000;
 const SPARSE_NODE_THRESHOLD = 1_500;
+const STUDY_MIN_VISITS = 1_000;
 
 const $ = (id) => document.getElementById(id);
 const ui = Object.fromEntries([
-  "modelStatus", "agentSeat", "userSeat", "agentStack", "userStack", "agentPosition", "userPosition", "agentCards", "userCards",
+  "modelStatus", "nodesetSelect", "agentSeat", "userSeat", "agentStack", "userStack", "agentPosition", "userPosition", "agentCards", "userCards",
   "agentBet", "userBet", "pot", "board", "message", "street", "toCall", "lastAction", "actions",
   "foldButton", "callButton", "raiseButton", "raiseSlider", "raiseOutput", "finishedActions", "newHandButton", "cancelNextHandButton",
   "newHandTop", "newGameTop", "resultDetail", "nextHandCountdown", "rangePosition", "rangeHistory", "rangeStack", "rangeSize", "rangeGrid", "rangeFold", "rangeCall", "rangeRaise",
-  "foldBar", "callBar", "raiseBar", "rangeDetail", "spotCoverage",
+  "foldBar", "callBar", "raiseBar", "rangeDetail", "spotCoverage", "advancedRaises", "raiseBreakdown",
+  "rangeSmallRaise", "rangePotRaise", "rangeAllIn", "smallRaiseBar", "potRaiseBar", "allInBar",
+  "arenaForm", "arenaA", "arenaB", "arenaHands", "arenaSeed", "arenaRun", "arenaStatus", "arenaResult",
 ].map((id) => [id, $(id)]));
 
 let model = {};
 let postflopStrategy = new PostflopStrategy();
 let rangeMode = "all";
 let rangeSpots = [];
+const nodesets = [{ id:"bundled", label:"Bundled · 10M", preflop:"/preflop-model.json", postflop:"/postflop-model.json" }];
+const NODESET_STORAGE_KEY = "lard-plays-poker-nodeset";
+let activeNodeset = null;
+let modelRequest = null;
 const savedProgress = loadProgress();
 let handNumber = savedProgress.handNumber;
 let bankroll = savedProgress.bankroll;
@@ -97,9 +104,12 @@ function newHand() {
     stacks, committed: [0, 0], bets: [0, 0], pot: 0,
     user, agent, actor: 1, street: 0,
     pending: new Set([0, 1]), histories: [[], [], [], []], lastRaise: 1,
+    publicHistory: [],
     finished: false, reveal: false, lastAction: "Blinds posted", result: "", winner: null,
+    nodeset: activeNodeset, preflopModel: model, postflopModel: postflopStrategy,
   };
   pay(0, 1); pay(1, 0.5);
+  updateModelStatus();
   logNewHand();
   render();
   if (game.actor === game.agent) scheduleAgent();
@@ -111,6 +121,7 @@ function logNewHand() {
   console.log("Timestamp:", timestamp);
   console.log("Lard's cards:", game.hole[game.agent].join(" "));
   console.log("Lard's position:", game.agent === 1 ? "SB" : "BB");
+  console.log("Nodeset:", game.nodeset?.label || "Heuristic strategy");
   console.log("Stacks:", { player: `${bankroll[0]} BB`, lard: `${bankroll[1]} BB` });
   console.groupEnd();
 }
@@ -162,7 +173,7 @@ function cancelNextHand() {
 }
 
 function toCall(player = game.actor) { return Math.max(...game.bets) - game.bets[player]; }
-function minRaiseTo() { return Math.min(game.bets[game.actor] + game.stacks[game.actor], Math.max(...game.bets) + game.lastRaise); }
+function minRaiseTo() { return Math.min(...game.bets.map((bet, player) => bet + game.stacks[player]), Math.max(...game.bets) + game.lastRaise); }
 function maxRaiseTo() { return game.bets[game.actor] + game.stacks[game.actor]; }
 function fmt(amount) { return `${Number(amount.toFixed(2))} BB`; }
 
@@ -172,6 +183,7 @@ function act(kind, raiseTo = null) {
   const call = toCall(player);
   if (kind === "fold") {
     if (call <= 0) return;
+    game.publicHistory.push([0, 0, 0]);
     game.histories[game.street].push("fold");
     game.lastAction = `${name(player)} folds`;
     finishHand(1 - player, "won by fold");
@@ -181,12 +193,15 @@ function act(kind, raiseTo = null) {
     const maximum = maxRaiseTo();
     const target = Math.max(minRaiseTo(), Math.min(Number(raiseTo), maximum));
     const oldHigh = Math.max(...game.bets);
+    const potAfterCall = game.pot + game.bets[0] + game.bets[1] + call;
+    game.publicHistory.push([2, (target - oldHigh) / potAfterCall, Number(target === maximum)]);
     pay(player, target - game.bets[player]);
-    game.lastRaise = Math.max(1, target - oldHigh);
+    game.lastRaise = Math.max(game.lastRaise, target - oldHigh);
     game.pending = new Set([1 - player]);
     game.histories[game.street].push("raise");
     game.lastAction = `${name(player)} raises to ${fmt(target)}`;
   } else {
+    game.publicHistory.push([1, 0, 0]);
     pay(player, call);
     game.pending.delete(player);
     game.histories[game.street].push("check/call");
@@ -354,7 +369,7 @@ function preflopDecisionContext() {
   const stack = effective < 20 ? "short" : effective < 50 ? "medium" : "deep";
   const bucket = [hand, game.agent === 1 ? "SB" : "BB", stack, historyBucket(history), sizeBucket(history)];
   const key = bucket.join("|");
-  const match = findPreflopStrategy(model, bucket);
+  const match = findPreflopStrategy(game.preflopModel, bucket, modelActionMask(game));
   const fallback = heuristicPreflop(hand, history, toCall(game.agent) > 0);
   if (!match) return { weights:fallback, spot:key, source:"heuristic fallback (untrained node and no neighboring trained size)" };
   const blended = blendSparseStrategy(match.strategy, fallback, SPARSE_NODE_THRESHOLD);
@@ -383,6 +398,11 @@ function rangeHand(row, column) {
 }
 
 function initializeRangeExplorer() {
+  ui.advancedRaises.disabled = !activeNodeset?.native || !Object.values(model).some((row) => row.length >= 7);
+  if (ui.advancedRaises.disabled) ui.advancedRaises.checked = false;
+  ui.advancedRaises.parentElement.title = ui.advancedRaises.disabled
+    ? "Select a V5 checkpoint to view individual raise sizes."
+    : "Show the saved small, pot, and all-in raise frequencies.";
   const spots = [...new Set(Object.keys(model).map((key) => key.split("|").slice(1).join("|")))];
   const historyOrder = { root:0, limped:1, vs_open:2, vs_3bet:3, vs_4bet:4 };
   spots.sort((a, b) => {
@@ -391,19 +411,13 @@ function initializeRangeExplorer() {
   });
   rangeSpots = spots.map((spot) => {
     const [position, stack, history, size] = spot.split("|");
-    return { position, stack, history, size };
+    const mask = spot.split("|")[4];
+    return { position, stack, history, size, mask };
   });
-  const filters = [ui.rangePosition, ui.rangeStack, ui.rangeHistory, ui.rangeSize];
-  filters.forEach((filter, index) => filter.addEventListener("change", () => {
-    populateRangeFilters(index + 1);
-    renderRange();
-  }));
   populateRangeFilters(0);
-  document.querySelectorAll("[data-range-action]").forEach((button) => button.addEventListener("click", () => {
-    rangeMode = button.dataset.rangeAction;
-    document.querySelectorAll("[data-range-action]").forEach((item) => item.classList.toggle("active", item === button));
-    renderRange();
-  }));
+  ui.rangeDetail.textContent = activeNodeset?.native
+    ? "Hover or tap a hand to see its preflop action mix."
+    : "Hover or tap a hand to see its exact action mix.";
   renderRange();
 }
 
@@ -427,41 +441,70 @@ function populateRangeFilters(startIndex) {
     filters[index].element.disabled = values.length <= 1;
   }
   const sizingCount = ui.rangeSize.options.length;
-  ui.spotCoverage.textContent = sizingCount <= 1
+  if (!activeNodeset?.native) ui.spotCoverage.textContent = !sizingCount ? "No averaged preflop nodes yet." : sizingCount === 1
     ? "One sizing was trained for this node; additional sizes require a wider training tree."
     : `${sizingCount} trained sizings are available for this node.`;
 }
 
 function renderRange() {
+  const advanced = ui.advancedRaises.checked && !ui.advancedRaises.disabled;
+  ui.raiseBreakdown.classList.toggle("hidden", !advanced);
+  if (activeNodeset?.native) ui.spotCoverage.textContent = advanced
+    ? "Raise colors show the split between sizes; Raise cell percentages show total raise frequency. Nodes under 1,000 visits are excluded."
+    : "Raise combines small, pot, and all-in choices. Nodes under 1,000 visits are excluded.";
   const spot = [ui.rangePosition.value, ui.rangeStack.value, ui.rangeHistory.value, ui.rangeSize.value].join("|");
-  const totals = [0, 0, 0];
+  const totals = [0, 0, 0, 0, 0, 0];
   let totalCombos = 0;
   const cells = [];
   const colors = ["#4d90c7", "#4dc78e", "#d75f61"];
+  const raiseColors = ["#e5b65f", "#d75f61", "#b898e8"];
   const modeIndex = ACTIONS.indexOf(rangeMode);
+  const availableMasks = [...new Set(rangeSpots.filter((s) => [s.position, s.stack, s.history, s.size].join("|") === spot).map((s) => s.mask).filter(Boolean))];
 
   for (const row of DISPLAY_RANKS) for (const column of DISPLAY_RANKS) {
     const hand = rangeHand(row, column);
-    const node = model[`${hand.key}|${spot}`];
+    const baseKey = `${hand.key}|${spot}`;
+    const rawRows = availableMasks.map((mask) => model[`${baseKey}|${mask}`]).filter(Boolean);
+    const rows = rawRows.filter((row) => row[3] >= STUDY_MIN_VISITS);
+    // Range display aggregates contexts; actual decisions always match one mask.
+    const visits = rows.reduce((sum, row) => sum + row[3], 0);
+    const legacy = model[baseKey];
+    const average = (a) => rows.reduce((sum, row) => sum + row[a] * row[3], 0) / visits;
+    const node = (legacy?.[3] >= STUDY_MIN_VISITS ? legacy : null) || (visits
+      ? [0, 1, 2].map(average).concat(visits, ...(advanced ? [4, 5, 6].map(average) : [])) : null);
     if (!node) {
-      cells.push(`<button class="range-cell missing" disabled><strong>${hand.label}</strong><small>—</small></button>`);
+      const sparse = legacy || rawRows.length;
+      const title = sparse ? `${hand.label} — Sparse: fewer than 1,000 visits per node` : `${hand.label} — Untrained`;
+      cells.push(`<button class="range-cell missing${sparse ? " sparse" : ""}" disabled title="${title}" aria-label="${title}"><strong>${hand.label}</strong><small>—</small></button>`);
       continue;
     }
-    const frequencies = node.slice(0, 3);
-    frequencies.forEach((frequency, index) => { totals[index] += frequency * hand.combos; });
+    const overall = node.slice(0, 3);
+    const raiseSizes = advanced ? node.slice(4, 7) : [0, 0, 0];
+    const frequencies = advanced ? overall.slice(0, 2).concat(raiseSizes) : overall;
+    overall.concat(raiseSizes).forEach((frequency, index) => { totals[index] += frequency * hand.combos; });
     totalCombos += hand.combos;
     let background;
     let shownFrequency;
-    if (rangeMode === "all") {
-      const foldEnd = frequencies[0] * 100, callEnd = (frequencies[0] + frequencies[1]) * 100;
-      background = `linear-gradient(90deg,${colors[0]} 0 ${foldEnd}%,${colors[1]} ${foldEnd}% ${callEnd}%,${colors[2]} ${callEnd}% 100%)`;
-      shownFrequency = Math.max(...frequencies);
+    if (rangeMode === "all" || (advanced && rangeMode === "raise")) {
+      const distribution = rangeMode === "all" ? frequencies : raiseSizes.map((weight) => overall[2] > 0 ? weight / overall[2] : 0);
+      const palette = rangeMode === "all" ? (advanced ? colors.slice(0, 2).concat(raiseColors) : colors) : raiseColors;
+      let edge = 0;
+      const segments = distribution.map((frequency, index) => {
+        const start = edge;
+        edge += frequency * 100;
+        return `${palette[index]} ${start}% ${edge}%`;
+      });
+      background = rangeMode === "raise" && overall[2] === 0 ? "#101c18" : `linear-gradient(90deg,${segments.join(",")})`;
+      shownFrequency = rangeMode === "all" ? Math.max(...frequencies) : overall[2];
     } else {
-      shownFrequency = frequencies[modeIndex];
+      shownFrequency = overall[modeIndex];
       const alpha = .08 + shownFrequency * .92;
       background = `color-mix(in srgb, ${colors[modeIndex]} ${alpha * 100}%, #101c18)`;
     }
-    const title = `${hand.label} — Fold ${(frequencies[0] * 100).toFixed(1)}%, Call ${(frequencies[1] * 100).toFixed(1)}%, Raise ${(frequencies[2] * 100).toFixed(1)}% · ${node[3].toLocaleString()} visits`;
+    const split = advanced ? overall[2] > 0
+      ? ` · Among raises: ${["Small", "Pot", "All-in"].map((label, a) => `${label} ${(raiseSizes[a] / overall[2] * 100).toFixed(1)}%`).join(", ")}`
+      : " · No raises" : "";
+    const title = `${hand.label} — Fold ${(overall[0] * 100).toFixed(1)}%, Call ${(overall[1] * 100).toFixed(1)}%, Raise ${(overall[2] * 100).toFixed(1)}%${split} · ${node[3].toLocaleString()} visits`;
     cells.push(`<button class="range-cell" style="background:${background}" title="${title}" aria-label="${title}"><strong>${hand.label}</strong><small>${Math.round(shownFrequency * 100)}%</small></button>`);
   }
   ui.rangeGrid.innerHTML = cells.join("");
@@ -472,6 +515,12 @@ function renderRange() {
   const averages = totals.map((total) => totalCombos ? total / totalCombos : 0);
   [ui.rangeFold, ui.rangeCall, ui.rangeRaise].forEach((element, index) => { element.textContent = `${(averages[index] * 100).toFixed(1)}%`; });
   [ui.foldBar, ui.callBar, ui.raiseBar].forEach((element, index) => { element.style.width = `${averages[index] * 100}%`; });
+  [ui.rangeSmallRaise, ui.rangePotRaise, ui.rangeAllIn].forEach((element, index) => {
+    element.textContent = totals[2] > 0 ? `${(totals[index + 3] / totals[2] * 100).toFixed(1)}%` : "—";
+  });
+  [ui.smallRaiseBar, ui.potRaiseBar, ui.allInBar].forEach((element, index) => {
+    element.style.width = `${totals[2] > 0 ? totals[index + 3] / totals[2] * 100 : 0}%`;
+  });
 }
 
 function postflopDecisionContext() {
@@ -485,7 +534,7 @@ function postflopDecisionContext() {
   else if (equity + .06 >= potOdds) heuristic = [.12, .76, .12];
   else heuristic = [.78, .21, .01];
 
-  const match = postflopStrategy.find(features.bucket);
+  const match = game.postflopModel.find(features.bucket, modelActionMask(game));
   const diagnostic = `${STREET_NAMES[game.street]}|bucket:${features.key}|equity:${(equity * 100).toFixed(1)}%|ppot:${(features.ppot * 100).toFixed(1)}%|npot:${(features.npot * 100).toFixed(1)}%`;
   if (!match) return { weights:heuristic, spot:diagnostic, source:"heuristic fallback (no trained node in this context)" };
 
@@ -520,12 +569,12 @@ function logAgentDecision(context, frequencies, decision) {
   console.log("Strategy source:", context.source);
   console.log(
     `Action frequencies: Fold ${(frequencies[0] * 100).toFixed(2)}% | `
-    + `Call ${(frequencies[1] * 100).toFixed(2)}% | Raise ${(frequencies[2] * 100).toFixed(2)}%`,
+    + `Call ${(frequencies[1] * 100).toFixed(2)}% | Raise ${(frequencies.slice(2).reduce((sum, value) => sum + value, 0) * 100).toFixed(2)}%`,
   );
   console.table({
     Fold: { frequency:`${(frequencies[0] * 100).toFixed(2)}%` },
     Call: { frequency:`${(frequencies[1] * 100).toFixed(2)}%` },
-    Raise: { frequency:`${(frequencies[2] * 100).toFixed(2)}%` },
+    Raise: { frequency:`${(frequencies.slice(2).reduce((sum, value) => sum + value, 0) * 100).toFixed(2)}%` },
   });
   console.log("Ultimate decision:", decision);
   console.groupEnd();
@@ -534,20 +583,42 @@ function logAgentDecision(context, frequencies, decision) {
 function scheduleAgent() {
   render();
   const scheduledGame = game;
-  window.setTimeout(() => {
+  window.setTimeout(async () => {
     if (game !== scheduledGame || game.finished || game.actor !== game.agent) return;
+    if (game.nodeset?.native) {
+      let report;
+      try {
+        const response = await fetch("/api/decision", {
+          method:"POST", headers:{ "Content-Type":"application/json" },
+          body:JSON.stringify({ nodeset:game.nodeset.id, hero:game.hole[game.agent], board:game.board, history:game.publicHistory, actor:game.agent, street:game.street }),
+        });
+        report = await response.json();
+        if (!response.ok) throw new Error(report.error || "Native inference failed");
+      } catch (error) {
+        console.warn("V5 native inference unavailable:", error);
+        report = { weights:[0, 1, 0, 0, 0], trained:false, unavailable:true };
+      }
+      if (game !== scheduledGame || game.finished || game.actor !== game.agent) return;
+      const mask = v5ActionMask(game);
+      const frequencies = normalizeWeights(report.weights.map((weight, action) => mask & (1 << action) ? weight : 0));
+      const choice = weightedChoice(frequencies);
+      const target = v5ActionAmounts(game)[choice];
+      logAgentDecision({ spot:`${STREET_NAMES[game.street]}|history:${report.history || "off-tree"}|cluster:${report.bucket ?? "none"}`,
+        source:report.trained ? `V5 averaged strategy; ${report.visits} visits${report.translated ? "; translated opposing size" : ""}` : report.unavailable ? "V5 off-tree check/call fallback" : "V5 uniform legal fallback" }, frequencies,
+        choice >= 2 ? `Raise to ${fmt(target)}` : choice === 1 ? "Check/call" : "Fold");
+      if (choice >= 2) act("raise", target);
+      else act(ACTIONS[choice]);
+      return;
+    }
     const context = game.street === 0 ? preflopDecisionContext() : postflopDecisionContext();
     const weights = [...context.weights];
-    if (toCall(game.agent) === 0) weights[0] = 0;
-    if (game.stacks[game.agent] <= toCall(game.agent)) weights[2] = 0;
+    const mask = modelActionMask(game);
+    if (!(mask & 1)) weights[0] = 0;
+    if (!(mask & 4)) weights[2] = 0;
     const frequencies = normalizeWeights(weights);
     const choice = weightedChoice(frequencies);
     if (choice === 2) {
-      const high = Math.max(...game.bets);
-      const totalPot = game.pot + game.bets[0] + game.bets[1];
-      const target = game.street === 0
-        ? (historyBucket(game.histories[0]) === "vs_4bet" ? maxRaiseTo() : Math.max(high * 3, minRaiseTo()))
-        : Math.max(minRaiseTo(), Math.round(high + totalPot * .5));
+      const target = modelRaiseTo(game);
       logAgentDecision(context, frequencies, `Raise to ${fmt(Math.min(target, maxRaiseTo()))}`);
       act("raise", Math.min(target, maxRaiseTo()));
     } else {
@@ -579,6 +650,54 @@ ui.newHandButton.addEventListener("click", () => bankroll.some((stack) => stack 
 ui.cancelNextHandButton.addEventListener("click", cancelNextHand);
 ui.newHandTop.addEventListener("click", newHand);
 ui.newGameTop.addEventListener("click", startNewGame);
+ui.nodesetSelect.addEventListener("change", () => loadNodeset(ui.nodesetSelect.value));
+ui.arenaForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (ui.arenaRun.disabled) return;
+  const selected = [ui.arenaA, ui.arenaB].map((select) => ({ id:select.value, label:select.selectedOptions[0].textContent }));
+  ui.arenaRun.disabled = true;
+  ui.arenaResult.replaceChildren();
+  ui.arenaStatus.textContent = "Running duplicate deals…";
+  try {
+    const response = await fetch("/api/arena", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ a:selected[0].id, b:selected[1].id, hands:Number(ui.arenaHands.value), seed:Number(ui.arenaSeed.value) }),
+    });
+    const report = await response.json();
+    if (!response.ok) throw new Error(report.error || "Match failed");
+    ui.arenaResult.innerHTML = '<table><thead><tr><th>Checkpoint</th><th>Net BB</th><th>BB/100 · 95% interval</th><th>Wins / losses / ties</th><th>Trained decisions</th></tr></thead><tbody></tbody></table>';
+    [report.a, report.b].forEach((agent, index) => {
+      const row = document.createElement("tr");
+      const interval = agent.ci95_bb_per_100?.map((number) => number.toFixed(2)).join(" to ") || "not enough pairs";
+      const c = agent.coverage;
+      for (const value of [selected[index].label, agent.net_bb.toFixed(2), `${agent.bb_per_100.toFixed(2)} (${interval})`,
+        `${agent.wins.toLocaleString()} / ${agent.losses.toLocaleString()} / ${agent.ties.toLocaleString()}`,
+        `${c.trained.toLocaleString()} / ${c.decisions.toLocaleString()}${c.translated_actions ? ` · ${c.translated_actions.toLocaleString()} translated` : ""}${c.off_tree_decisions ? ` · ${c.off_tree_decisions.toLocaleString()} off-tree` : ""}`]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.append(cell);
+      }
+      ui.arenaResult.querySelector("tbody").append(row);
+    });
+    const interval = report.a.ci95_bb_per_100;
+    const conclusion = !interval ? "Run more pairs for an interval." : interval[0] > 0 ? "A leads in this match." : interval[1] < 0 ? "B leads in this match." : "No clear winner at 95% confidence.";
+    ui.arenaStatus.textContent = `${report.hands.toLocaleString()} hands · ${report.duplicate_pairs.toLocaleString()} duplicate deals · ${report.samples} equity samples · ${report.elapsed_seconds.toFixed(2)}s. ${conclusion}`;
+  } catch (error) {
+    ui.arenaStatus.textContent = error.message;
+  } finally {
+    ui.arenaRun.disabled = false;
+  }
+});
+[ui.rangePosition, ui.rangeStack, ui.rangeHistory, ui.rangeSize].forEach((filter, index) => filter.addEventListener("change", () => {
+  populateRangeFilters(index + 1);
+  renderRange();
+}));
+document.querySelectorAll("[data-range-action]").forEach((button) => button.addEventListener("click", () => {
+  rangeMode = button.dataset.rangeAction;
+  document.querySelectorAll("[data-range-action]").forEach((item) => item.classList.toggle("active", item === button));
+  renderRange();
+}));
+ui.advancedRaises.addEventListener("change", renderRange);
 document.querySelectorAll(".session-popover button").forEach((button) => button.addEventListener("click", () => { $("sessionMenu").open = false; }));
 document.addEventListener("click", (event) => {
   if (!$("sessionMenu").contains(event.target)) $("sessionMenu").open = false;
@@ -613,21 +732,71 @@ document.addEventListener("keydown", (event) => {
   if (event.key.toLowerCase() === "r" && !ui.raiseButton.disabled) ui.raiseButton.click();
 });
 
-try {
-  const [preflopNodes, postflopNodes] = await Promise.all([
-    fetch("/preflop-model.json"),
-    fetch("/postflop-model.json"),
-  ]).then(async (responses) => {
-    if (responses.some((response) => !response.ok)) throw new Error("Strategy unavailable");
-    return Promise.all(responses.map((response) => response.json()));
-  });
-  model = preflopNodes;
-  postflopStrategy = new PostflopStrategy(postflopNodes);
-  const totalNodes = Object.keys(preflopNodes).length + Object.keys(postflopNodes).length;
-  ui.modelStatus.classList.add("ready"); ui.modelStatus.lastChild.textContent = ` ${totalNodes.toLocaleString()} full-game strategy nodes`;
-  initializeRangeExplorer();
-} catch (error) {
-  ui.modelStatus.lastChild.textContent = " Heuristic strategy";
-  ui.rangeGrid.innerHTML = '<p class="range-error">The trained strategy could not be loaded.</p>';
+function updateModelStatus() {
+  if (modelRequest) return;
+  // Counts come from the loaded export; the current hand retains its own policy.
+  ui.modelStatus.lastChild.textContent = activeNodeset
+    ? ` ${activeNodeset.label} · ${activeNodeset.nodeCount.toLocaleString()} nodes${game && game.nodeset?.id !== activeNodeset.id ? " · applies next hand" : ""}`
+    : " Heuristic strategy";
 }
+
+async function loadNodeset(id) {
+  const selected = nodesets.find((item) => item.id === id);
+  if (!selected) return;
+  modelRequest?.abort();
+  const request = new AbortController();
+  modelRequest = request;
+  ui.nodesetSelect.setAttribute("aria-busy", "true");
+  ui.modelStatus.lastChild.textContent = ` Loading ${selected.label}…`;
+  try {
+    const [preflopNodes, postflopNodes] = await Promise.all([selected.preflop, selected.postflop].map(async (path) => {
+      const response = await fetch(path, { signal:request.signal });
+      if (!response.ok) throw new Error("Strategy unavailable");
+      return response.json();
+    }));
+    const nextPostflop = new PostflopStrategy(postflopNodes);
+    if (modelRequest !== request) return;
+    model = preflopNodes;
+    postflopStrategy = nextPostflop;
+    activeNodeset = { ...selected, nodeCount:selected.totalNodes ?? Object.keys(preflopNodes).length + Object.keys(postflopNodes).length };
+    ui.nodesetSelect.value = id;
+    ui.modelStatus.classList.add("ready");
+    initializeRangeExplorer();
+    try { localStorage.setItem(NODESET_STORAGE_KEY, id); } catch (_) { /* Selection still works without storage. */ }
+  } catch (error) {
+    if (modelRequest !== request) return;
+    ui.nodesetSelect.value = activeNodeset?.id || "bundled";
+    ui.modelStatus.lastChild.textContent = ` Could not load ${selected.label}.${activeNodeset ? ` Still using ${activeNodeset.label}.` : " Using heuristics."}`;
+    if (!activeNodeset) ui.rangeGrid.innerHTML = '<p class="range-error">The trained strategy could not be loaded.</p>';
+    console.warn("Nodeset could not be loaded:", error);
+  } finally {
+    if (modelRequest === request) {
+      modelRequest = null;
+      ui.nodesetSelect.removeAttribute("aria-busy");
+      if (activeNodeset?.id === id) updateModelStatus();
+    }
+  }
+}
+
+try {
+  const response = await fetch("/api/nodesets", { cache:"no-store" });
+  if (response.ok) {
+    nodesets.push(...await response.json());
+    ui.arenaRun.disabled = false;
+    ui.arenaStatus.textContent = "Choose two checkpoints to compare.";
+  }
+} catch (_) { /* Static hosting still offers the bundled model. */ }
+ui.nodesetSelect.replaceChildren(...nodesets.map((item) => new Option(item.label, item.id)));
+const arenaChoices = [...nodesets, { id:"baseline:random", label:"Random legal bet sizes" }, { id:"baseline:call", label:"Always check/call" }, { id:"baseline:pot", label:"Random actions with pot bets" }];
+for (const select of [ui.arenaA, ui.arenaB]) select.replaceChildren(...arenaChoices.map((item) => new Option(item.label, item.id)));
+const latest = nodesets[1];
+if (latest) {
+  ui.arenaA.value = latest.id;
+  ui.arenaB.value = nodesets.find((item) => item.id !== latest.id && item.iterations && item.iterations !== latest.iterations)?.id || "bundled";
+}
+ui.nodesetSelect.disabled = nodesets.length < 2;
+let selectedId = "bundled";
+try { selectedId = localStorage.getItem(NODESET_STORAGE_KEY) || selectedId; } catch (_) { /* Use the bundled default. */ }
+await loadNodeset(nodesets.some((item) => item.id === selectedId) ? selectedId : "bundled");
+if (!activeNodeset && selectedId !== "bundled") await loadNodeset("bundled");
 newHand();

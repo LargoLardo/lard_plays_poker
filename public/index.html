@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#090b0a" />
-    <meta name="description" content="Play heads-up hold'em against a 10-million-iteration MCCFR poker agent." />
+    <meta name="description" content="Play heads-up hold'em and study strategies from trained MCCFR poker agents." />
     <title>Lard Plays Poker</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -17,14 +17,16 @@
       <nav class="view-tabs" role="tablist" aria-label="Application views">
         <button id="playTab" class="view-tab active" role="tab" aria-selected="true" aria-controls="gameplayPanel" data-tab="gameplayPanel">Play</button>
         <button id="studyTab" class="view-tab" role="tab" aria-selected="false" aria-controls="strategyPanel" data-tab="strategyPanel" tabindex="-1">Study</button>
+        <button id="arenaTab" class="view-tab" role="tab" aria-selected="false" aria-controls="arenaPanel" data-tab="arenaPanel" tabindex="-1">Arena</button>
       </nav>
       <div class="top-actions">
         <details id="sessionMenu" class="session-menu">
           <summary aria-label="Session settings">•••</summary>
           <div class="session-popover">
+            <label class="nodeset-picker"><span>Nodeset</span><select id="nodesetSelect" aria-describedby="modelStatus" disabled><option value="bundled">Bundled · 10M</option></select></label>
             <button id="newHandTop" class="button ghost">Deal a new hand</button>
             <button id="newGameTop" class="button ghost danger">Reset stacks</button>
-            <span id="modelStatus" class="status"><i></i> Loading strategy</span>
+            <span id="modelStatus" class="status" role="status"><i></i> Loading strategy</span>
           </div>
         </details>
       </div>
@@ -112,6 +114,7 @@
           <button class="range-mode fold-mode" data-range-action="fold"><i></i> Fold</button>
           <button class="range-mode call-mode" data-range-action="check/call"><i></i> Call</button>
           <button class="range-mode raise-mode" data-range-action="raise"><i></i> Raise</button>
+          <label class="advanced-raise-option" title="Select a V5 checkpoint to view individual raise sizes."><input id="advancedRaises" type="checkbox" disabled /> Advanced raises</label>
         </div>
 
         <div class="range-content">
@@ -124,9 +127,28 @@
             <div class="frequency-row"><span><i class="call-dot"></i>Call</span><strong id="rangeCall">0%</strong></div>
             <div class="frequency-row"><span><i class="raise-dot"></i>Raise</span><strong id="rangeRaise">0%</strong></div>
             <div class="frequency-bar"><i id="foldBar"></i><i id="callBar"></i><i id="raiseBar"></i></div>
+            <div id="raiseBreakdown" class="raise-breakdown hidden">
+              <span class="eyebrow">Among raises</span>
+              <div class="frequency-row"><span><i class="small-raise-dot"></i>Small</span><strong id="rangeSmallRaise">—</strong></div>
+              <div class="frequency-row"><span><i class="pot-raise-dot"></i>Pot</span><strong id="rangePotRaise">—</strong></div>
+              <div class="frequency-row"><span><i class="all-in-dot"></i>All-in</span><strong id="rangeAllIn">—</strong></div>
+              <div class="frequency-bar raise-distribution"><i id="smallRaiseBar"></i><i id="potRaiseBar"></i><i id="allInBar"></i></div>
+            </div>
             <p id="rangeDetail" aria-live="polite">Hover or tap a hand to see its exact action mix.</p>
           </aside>
         </div>
+      </section>
+      <section id="arenaPanel" class="range-panel tab-panel hidden" role="tabpanel" aria-labelledby="arenaTab">
+        <form id="arenaForm" class="arena-form">
+          <label><span>Checkpoint A</span><select id="arenaA" required></select></label>
+          <label><span>Checkpoint B</span><select id="arenaB" required></select></label>
+          <label><span>Hands</span><input id="arenaHands" type="number" min="2" max="1000000" step="2" value="10000" required /></label>
+          <label><span>Seed</span><input id="arenaSeed" type="number" min="0" max="4294967295" step="1" value="1" required /></label>
+          <button id="arenaRun" class="button primary" type="submit" disabled>Run match</button>
+        </form>
+        <p class="arena-note">100 BB stacks. Each deal is played twice with seats swapped. Uses averaged strategies, with uniform play for missing nodes; preflop-only agents check/call later streets.</p>
+        <p id="arenaStatus" class="arena-status" role="status">Start locally with npm run dev to compare checkpoints.</p>
+        <div id="arenaResult" class="arena-result"></div>
       </section>
     </main>
 

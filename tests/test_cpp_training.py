@@ -2,42 +2,53 @@
 
 import json
 import math
+import os
 from pathlib import Path
 import random
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 
 from pokerkit import Automation, Mode, NoLimitTexasHoldem
 from treys import Card as TreysCard, Evaluator
 from utils.bucketer import Bucketer
+from utils.agent_policy import legal_actions, bucket_with_actions
+from full_game_mccfr import get_pf_raise_size, get_halfp_raise_size
+from cpp.run import build
+from utils.shared_nodes import packed_bucket
 
 ROOT = Path(__file__).resolve().parents[1]
 CPP = ROOT / 'cpp'
 
 
 def run(*arguments):
-    return subprocess.run([str(CPP / 'run.sh'), *map(str, arguments)], cwd=ROOT, text=True, capture_output=True)
+    return subprocess.run([sys.executable, str(CPP / 'run.py'), *map(str, arguments)], cwd=ROOT, text=True, capture_output=True)
 
 
 def read_checkpoint(path):
     with open(path, 'rb') as stream:
-        if stream.read(8) != b'LARDCPP1':
+        magic = stream.read(8)
+        if magic not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3', b'LARDCPP4'):
             raise ValueError('invalid magic')
-        mode, samples, iterations, count, length = struct.unpack('<IIQQI', stream.read(28))
+        mode, samples = struct.unpack('<II', stream.read(8))
+        workers, chunk = struct.unpack('<II', stream.read(8)) if magic == b'LARDCPP4' else (1, 64)
+        iterations, count, length = struct.unpack('<QQI', stream.read(20))
         rng = stream.read(length)
         nodes = {}
         for _ in range(count):
             key, *values = struct.unpack('<I6dQ', stream.read(60))
             nodes[key] = values
-        return mode, samples, iterations, rng, nodes
+        return mode, samples, iterations, rng, nodes, workers, chunk
 
 
 class CppTrainingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        subprocess.run([str(CPP / 'test.sh')], cwd=ROOT, check=True, capture_output=True)
+        cls.engine = build(test=True)
+        build()
+        subprocess.run([str(cls.engine)], cwd=ROOT, check=True, capture_output=True)
 
     def test_evaluator_matches_treys_for_5_6_7_cards(self):
         rng = random.Random(8)
@@ -47,7 +58,7 @@ class CppTrainingTests(unittest.TestCase):
         hands += [text.split() for text in [
             'As 2s 3s 4s 5s Kd Qh', 'As Ah Ad Ks Kh Kd 2c', 'Ts Js Qs Ks As 2d 3h',
             'As Ah Ad Ac Ks Kh Kd', '2s 3d 4h 5c 6s 7d 8h']]
-        result = subprocess.run([str(CPP / 'build/test'), 'eval'], input='\n'.join(' '.join(h) for h in hands), text=True, capture_output=True, check=True)
+        result = subprocess.run([str(self.engine), 'eval'], input='\n'.join(' '.join(h) for h in hands), text=True, capture_output=True, check=True)
         scores = list(map(int, result.stdout.splitlines()))
         evaluator = Evaluator()
         expected = [evaluator.evaluate([TreysCard.new(c) for c in hand[:2]], [TreysCard.new(c) for c in hand[2:]]) for hand in hands]
@@ -63,7 +74,7 @@ class CppTrainingTests(unittest.TestCase):
     def test_betting_and_buckets_match_pokerkit(self):
         rng = random.Random(72)
         deck = [r + s for r in '23456789TJQKA' for s in 'shdc']
-        cases, expected = [], []
+        cases, expected, browser_cases = [], [], []
         for case in range(250):
             deal = rng.sample(deck, 9)
             automations = tuple(a for a in Automation if a not in (
@@ -72,6 +83,7 @@ class CppTrainingTests(unittest.TestCase):
             state.deal_hole(''.join(deal[:2]), 0)
             state.deal_hole(''.join(deal[2:4]), 1)
             history = [[], [], [], []]
+            last_raise = 1
             actions, snapshots = [], []
             burns = iter(c for c in deck if c not in deal)
             bucketer = Bucketer(1)
@@ -99,6 +111,14 @@ class CppTrainingTests(unittest.TestCase):
                     bucket = bucketer.turn_bucket(state, history[2], history[1])
                 else:
                     bucket = bucketer.river_bucket(state, history[3], history[2])
+                amount = get_pf_raise_size(state, bucket) if street == 0 else get_halfp_raise_size(state, bucket)
+                bucket = bucket_with_actions(bucket, legal_actions(state, amount))
+                browser_cases.append({
+                    'game': {'street': street, 'agent': state.actor_index,
+                             'stacks': list(state.stacks), 'bets': list(state.bets),
+                             'pot': state.total_pot_amount - sum(state.bets),
+                             'histories': [list(h) for h in history], 'lastRaise': last_raise},
+                    'raiseTo': amount, 'mask': bucket[-1]})
                 minimum = state.min_completion_betting_or_raising_to_amount
                 return {'street': street, 'actor': state.actor_index,
                         'stacks': [int(x * 2) for x in state.stacks],
@@ -123,22 +143,28 @@ class CppTrainingTests(unittest.TestCase):
                 elif action == 1:
                     state.check_or_call()
                 else:
+                    old_high = max(state.bets)
                     low = int(state.min_completion_betting_or_raising_to_amount * 2)
                     high = int(state.max_completion_betting_or_raising_to_amount * 2)
                     amount = rng.choice([low, high, rng.randint(low, high)])
                     state.complete_bet_or_raise_to(amount / 2)
+                    last_raise = max(last_raise, amount / 2 - old_high)
                 history[street].append(['fold', 'check/call', 'raise'][action])
                 actions += [action, amount]
                 settle_deal()
+                if state.street_index != street:
+                    last_raise = 1
                 snapshots.append(snapshot())
             cases.append(' '.join(deal + list(map(str, actions))))
             expected.append(snapshots)
-        result = subprocess.run([str(CPP / 'build/test'), 'trace'], input='\n'.join(cases), text=True, capture_output=True, check=True)
+        result = subprocess.run([str(self.engine), 'trace'], input='\n'.join(cases), text=True, capture_output=True, check=True)
         native_cases = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(len(native_cases), len(expected))
         for index, (actual, wanted) in enumerate(zip(native_cases, expected)):
             self.assertEqual(len(actual), len(wanted), cases[index])
             for native, python in zip(actual, wanted):
+                if native['street'] < 4:
+                    self.assertEqual(packed_bucket(native['bucket']), native['key'])
                 for key, value in python.items():
                     if key == 'bucket' and python['street']:
                         self.assertEqual(native[key][1:], value[1:], cases[index])
@@ -146,6 +172,57 @@ class CppTrainingTests(unittest.TestCase):
                         self.assertEqual(native[key][0][skip:], value[0][skip:], cases[index])
                     else:
                         self.assertEqual(native[key], value, (cases[index], key))
+
+        browser = subprocess.run(['node', '--input-type=module', '-e', '''
+import assert from 'node:assert/strict';
+import { modelActionMask, modelRaiseTo } from './public/model-policy.js';
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+for (const { game, raiseTo, mask } of JSON.parse(input)) {
+    assert.equal(modelRaiseTo(game), raiseTo, JSON.stringify(game));
+    assert.equal(modelActionMask(game), mask, JSON.stringify(game));
+}
+'''], cwd=ROOT, input=json.dumps(browser_cases), text=True, capture_output=True)
+        self.assertEqual(browser.returncode, 0, browser.stderr)
+
+    def test_iteration_snapshots_resume_and_preserve_existing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'nested' / 'run.bin'
+            snapshots = output.parent / 'run-snapshots'
+            first = run('--iterations', 7, '--samples', 10, '--seed', 9,
+                        '--snapshot-every', 5, '--output', output)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual([p.name for p in snapshots.iterdir()], ['iter-5.bin'])
+            resumed = run('--resume', output, '--iterations', 5, '--snapshot-every', 5)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(sorted(p.name for p in snapshots.iterdir()), ['iter-10.bin', 'iter-5.bin'])
+            for count, path in ((5, snapshots / 'iter-5.bin'),
+                                (10, snapshots / 'iter-10.bin'), (12, output)):
+                reference = root / f'reference-{count}.bin'
+                result = run('--iterations', count, '--samples', 10, '--seed', 9, '--output', reference)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(read_checkpoint(path), read_checkpoint(reference))
+            self.assertFalse((root / 'reference-12-snapshots').exists())
+            fork = root / 'fork.bin'
+            result = run('--resume', snapshots / 'iter-5.bin', '--iterations', 7, '--output', fork)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(fork), read_checkpoint(output))
+            original = (snapshots / 'iter-10.bin').read_bytes()
+            rewind = run('--resume', snapshots / 'iter-5.bin', '--reset-average',
+                         '--iterations', 5, '--snapshot-every', 5, '--output', output)
+            self.assertEqual(rewind.returncode, 0, rewind.stderr)
+            self.assertIn('Keeping existing snapshot', rewind.stdout)
+            self.assertEqual((snapshots / 'iter-10.bin').read_bytes(), original)
+            self.assertFalse(list(snapshots.glob('*.tmp')))
+            self.assertNotEqual(run('--snapshot-every', -1, '--iterations', 0,
+                                    '--output', root / 'invalid.bin').returncode, 0)
+            limited = root / 'limited.bin'
+            result = run('--iterations', 10, '--samples', 10, '--max-nodes', 1,
+                         '--snapshot-every', 1, '--output', limited)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(limited)[2], 0)
+            self.assertFalse((root / 'limited-snapshots').exists())
 
     def test_cli_resume_exports_and_memory_stop(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -168,7 +245,32 @@ class CppTrainingTests(unittest.TestCase):
                     if file.startswith('post'):
                         self.assertIsInstance(json.loads(key)[0], list)
                     else:
-                        self.assertEqual(len(key.split('|')), 5)
+                        self.assertEqual(len(key.split('|')), 6)
+                        self.assertIn(int(key.split('|')[-1]), (2, 3, 6, 7))
+            data = a.read_bytes()
+            mode, samples, iterations, rng_state, original_nodes, _, _ = read_checkpoint(a)
+            length = len(rng_state)
+            key, row = next(iter(read_checkpoint(a)[4].items()))
+            for version in (1, 2):
+                legacy = root / f'legacy-{version}.bin'
+                legacy.write_bytes(f'LARDCPP{version}'.encode() +
+                    struct.pack('<IIQQI', mode, samples, iterations, 1, length) + rng_state +
+                    struct.pack('<I6dQ', key & ((1 << 30) - 1), *row))
+                original = legacy.read_bytes()
+                rejected = run('--resume', legacy, '--iterations', 1, '--reset-average')
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn('buckets merge legal actions', rejected.stderr)
+                exported = run('--resume', legacy, '--iterations', 0, '--export', root / f'legacy-model-{version}')
+                self.assertEqual(exported.returncode, 0, exported.stderr)
+                self.assertEqual(legacy.read_bytes(), original)
+            # V3 has the corrected keys and can continue without resetting weights.
+            v3 = root / 'v3.bin'
+            v3.write_bytes(b'LARDCPP3' + data[8:16] + data[24:])
+            result = run('--resume', v3, '--iterations', 4, '--output', root / 'upgraded.bin')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = run('--resume', a, '--iterations', 4, '--output', root / 'v4-reference.bin')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(root / 'upgraded.bin'), read_checkpoint(root / 'v4-reference.bin'))
             self.assertNotEqual(run('--iterations', 1, '--output', a).returncode, 0)
             self.assertNotEqual(run('--resume', a, '--samples', 11).returncode, 0)
             limited = run('--iterations', 100_000, '--samples', 10, '--memory-mb', 4, '--output', root / 'limit.bin')
@@ -180,6 +282,49 @@ class CppTrainingTests(unittest.TestCase):
             root.joinpath('broken.bin').write_bytes(a.read_bytes()[:-4])
             self.assertNotEqual(run('--resume', root / 'broken.bin', '--iterations', 0).returncode, 0)
             self.assertFalse(a.with_suffix('.bin.tmp').exists())
+
+    def test_parallel_resume_snapshots_and_memory_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output, reference = root / 'parallel.bin', root / 'continuous.bin'
+            first = run('--iterations', 24, '--workers', 3, '--chunk-size', 4,
+                        '--samples', 10, '--seed', 9, '--output', output, '--snapshot-every', 12)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            resumed = run('--resume', output, '--iterations', 24, '--snapshot-every', 12)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertIn('3 worker(s)', resumed.stdout)
+            continuous = run('--iterations', 48, '--workers', 3, '--chunk-size', 4,
+                             '--samples', 10, '--seed', 9, '--output', reference)
+            self.assertEqual(continuous.returncode, 0, continuous.stderr)
+            self.assertEqual(read_checkpoint(output), read_checkpoint(reference))
+            self.assertEqual(read_checkpoint(output)[5:], (3, 4))
+            from tools.audit_model import audit
+            metadata = audit(output)['metadata']
+            self.assertEqual((metadata['format'], metadata['schema'], metadata['workers'], metadata['chunk_size']),
+                             ('LARDCPP4', 2, 3, 4))
+            snapshots = root / 'parallel-snapshots'
+            self.assertEqual(sorted(p.name for p in snapshots.iterdir()),
+                             ['iter-12.bin', 'iter-24.bin', 'iter-36.bin', 'iter-48.bin'])
+            self.assertEqual(read_checkpoint(snapshots / 'iter-48.bin'), read_checkpoint(output))
+            clipped = root / 'clipped.bin'
+            result = run('--iterations', 11, '--workers', 3, '--chunk-size', 4,
+                         '--samples', 10, '--snapshot-every', 5, '--output', clipped)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(clipped)[2], 11)
+            for count in (5, 10):
+                self.assertEqual(read_checkpoint(root / 'clipped-snapshots' / f'iter-{count}.bin')[2], count)
+            limited, empty = root / 'limited.bin', root / 'empty.bin'
+            for count, path in ((12, limited), (0, empty)):
+                result = run('--iterations', count, '--workers', 3, '--chunk-size', 4,
+                             '--samples', 10, '--max-nodes', 1, '--output', path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(limited), read_checkpoint(empty), 'failed batch rolls back weights and RNG')
+            self.assertNotEqual(run('--workers', 257, '--iterations', 0).returncode, 0)
+            self.assertNotEqual(run('--chunk-size', 0, '--iterations', 0).returncode, 0)
+            auto = root / 'auto.bin'
+            result = run('--workers', 0, '--iterations', 0, '--output', auto)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(read_checkpoint(auto)[5], min(256, os.cpu_count() or 1))
 
 
 if __name__ == '__main__':

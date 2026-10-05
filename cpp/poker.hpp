@@ -7,6 +7,9 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 namespace poker {
 using Cards = std::array<int, 9>; // BB hole, SB hole, five board cards.
@@ -26,11 +29,31 @@ inline int card(const std::string& text) {
 }
 
 inline int straight(uint32_t mask) {
-    if (mask & (1U << 14)) mask |= 1U << 1;
-    for (int high = 14; high >= 5; --high)
-        if (((mask >> (high - 4)) & 31U) == 31U) return high;
-    return 0;
+    // All 13-rank masks fit in an 8 KiB table; initialize once per process.
+    static const auto table = [] {
+        std::array<uint8_t, 8192> result{};
+        for (uint32_t bits = 0; bits < result.size(); ++bits) {
+            for (int high = 14; high >= 6; --high)
+                if (((bits >> (high - 6)) & 31U) == 31U) { result[bits] = uint8_t(high); break; }
+            if (!result[bits] && (bits & 4111U) == 4111U) result[bits] = 5;
+        }
+        return result;
+    }();
+    return table[(mask >> 2) & 8191U];
 }
+
+struct HandCounts {
+    std::array<uint32_t, 4> suits{};
+    std::array<uint8_t, 4> suit_counts{};
+    uint32_t mask = 0, pairs = 0, trips = 0, quads = 0;
+    void add(int card) {
+        int r = card / 4 + 2, s = card % 4;
+        uint32_t bit = 1U << r;
+        // Multiplicity masks contain ranks seen at least 2/3/4 times.
+        quads |= trips & bit; trips |= pairs & bit; pairs |= mask & bit;
+        mask |= bit; suits[s] |= bit; ++suit_counts[s];
+    }
+};
 
 inline uint32_t score(int category, const std::array<int, 5>& values) {
     uint32_t result = uint32_t(category);
@@ -38,54 +61,53 @@ inline uint32_t score(int category, const std::array<int, 5>& values) {
     return result;
 }
 
-// Evaluate 5-7 cards directly from rank counts and suit bitmasks. Higher wins.
-inline uint32_t evaluate(const int* cards, int count) {
-    std::array<int, 15> counts{};
-    std::array<uint32_t, 4> suit_masks{};
-    std::array<int, 4> suit_counts{};
-    uint32_t mask = 0;
-    for (int i = 0; i < count; ++i) {
-        int r = cards[i] / 4 + 2, s = cards[i] % 4;
-        ++counts[r]; ++suit_counts[s];
-        mask |= 1U << r; suit_masks[s] |= 1U << r;
+inline int highest_rank(uint32_t mask) {
+#ifdef _MSC_VER
+    unsigned long rank = 0;
+    return _BitScanReverse(&rank, mask) ? int(rank) : 0;
+#else
+    return mask ? 31 - __builtin_clz(mask) : 0;
+#endif
+}
+
+inline std::array<int, 5> high_cards(uint32_t mask) {
+    std::array<int, 5> values{};
+    for (int i = 0; i < 5 && mask; ++i) {
+        values[i] = highest_rank(mask);
+        mask &= ~(1U << values[i]);
     }
+    return values;
+}
+
+// Evaluate 5-7 cards directly from rank/suit bitmasks. Higher wins.
+inline uint32_t evaluate(const HandCounts& hand) {
+    const auto& suit_masks = hand.suits;
+    const auto& suit_counts = hand.suit_counts;
+    uint32_t mask = hand.mask;
     int flush = -1;
     for (int s = 0; s < 4; ++s) if (suit_counts[s] >= 5) {
         int high = straight(suit_masks[s]);
         if (high) return score(8, {high, 0, 0, 0, 0});
         flush = s;
     }
-    int quad = 0, trip = 0, second_trip = 0;
-    std::array<int, 3> pairs{};
-    int pair_count = 0;
-    for (int r = 14; r >= 2; --r) {
-        if (counts[r] == 4) quad = r;
-        if (counts[r] == 3) { if (!trip) trip = r; else second_trip = r; }
-        if (counts[r] == 2) pairs[pair_count++] = r;
-    }
-    auto kickers = [&](int skip1, int skip2) {
-        std::array<int, 5> result{};
-        int n = 0;
-        for (int r = 14; r >= 2 && n < 5; --r)
-            if (counts[r] && r != skip1 && r != skip2) result[n++] = r;
-        return result;
-    };
-    if (quad) return score(7, {quad, kickers(quad, 0)[0], 0, 0, 0});
-    if (trip && (pair_count || second_trip))
-        return score(6, {trip, std::max(pairs[0], second_trip), 0, 0, 0});
-    if (flush >= 0) {
-        std::array<int, 5> values{};
-        int n = 0;
-        for (int r = 14; r >= 2 && n < 5; --r)
-            if (suit_masks[flush] & (1U << r)) values[n++] = r;
-        return score(5, values);
-    }
+    int quad = highest_rank(hand.quads), trip = highest_rank(hand.trips);
+    if (quad) return score(7, {quad, highest_rank(mask & ~(1U << quad)), 0, 0, 0});
+    int full_pair = highest_rank(hand.pairs & ~(1U << trip));
+    if (trip && full_pair) return score(6, {trip, full_pair, 0, 0, 0});
+    if (flush >= 0) return score(5, high_cards(suit_masks[flush]));
     int high = straight(mask);
     if (high) return score(4, {high, 0, 0, 0, 0});
-    if (trip) { auto k = kickers(trip, 0); return score(3, {trip, k[0], k[1], 0, 0}); }
-    if (pair_count >= 2) return score(2, {pairs[0], pairs[1], kickers(pairs[0], pairs[1])[0], 0, 0});
-    if (pair_count) { auto k = kickers(pairs[0], 0); return score(1, {pairs[0], k[0], k[1], k[2], 0}); }
-    return score(0, kickers(0, 0));
+    if (trip) { auto k = high_cards(mask & ~(1U << trip)); return score(3, {trip, k[0], k[1], 0, 0}); }
+    int pair = highest_rank(hand.pairs), second_pair = highest_rank(hand.pairs & ~(1U << pair));
+    if (second_pair) return score(2, {pair, second_pair, highest_rank(mask & ~((1U << pair) | (1U << second_pair))), 0, 0});
+    if (pair) { auto k = high_cards(mask & ~(1U << pair)); return score(1, {pair, k[0], k[1], k[2], 0}); }
+    return score(0, high_cards(mask));
+}
+
+inline uint32_t evaluate(const int* cards, int count) {
+    HandCounts hand;
+    for (int i = 0; i < count; ++i) hand.add(cards[i]);
+    return evaluate(hand);
 }
 
 struct History {
@@ -213,10 +235,11 @@ inline int card_bucket(const Cards& cards, int actor, int street, int samples, s
     std::array<int, 52> deck{};
     int available = 0;
     for (int c = 0; c < 52; ++c) if (!known[c]) deck[available++] = c;
-    std::array<int, 7> hero{}, villain{};
-    hero[0] = cards[actor * 2]; hero[1] = cards[actor * 2 + 1];
-    for (int i = 0; i < n; ++i) hero[2 + i] = villain[2 + i] = cards[4 + i];
-    uint32_t hero_now = evaluate(hero.data(), n + 2);
+    HandCounts visible;
+    for (int i = 0; i < n; ++i) visible.add(cards[4 + i]);
+    auto hero_visible = visible;
+    hero_visible.add(cards[actor * 2]); hero_visible.add(cards[actor * 2 + 1]);
+    uint32_t hero_now = evaluate(hero_visible);
     int wins2 = 0, ahead = 0, behind = 0, improve = 0, worsen = 0;
     // Partial Fisher-Yates samples without replacement, restored after each sample.
     std::array<int, 4> swaps{};
@@ -226,12 +249,17 @@ inline int card_bucket(const Cards& cards, int actor, int street, int samples, s
             int j = std::uniform_int_distribution<int>(i, available - 1)(rng);
             swaps[i] = j; std::swap(deck[i], deck[j]);
         }
-        villain[0] = deck[0]; villain[1] = deck[1];
-        for (int i = n; i < 5; ++i) hero[i + 2] = villain[i + 2] = deck[2 + i - n];
-        auto h = evaluate(hero.data(), 7), v = evaluate(villain.data(), 7);
+        auto runout = visible;
+        for (int i = n; i < 5; ++i) runout.add(deck[2 + i - n]);
+        auto hero = runout, villain = runout;
+        hero.add(cards[actor * 2]); hero.add(cards[actor * 2 + 1]);
+        villain.add(deck[0]); villain.add(deck[1]);
+        auto h = street == 3 ? hero_now : evaluate(hero), v = evaluate(villain);
         wins2 += h > v ? 2 : h == v ? 1 : 0;
         if (street < 3) {
-            auto v_now = evaluate(villain.data(), n + 2);
+            auto villain_visible = visible;
+            villain_visible.add(deck[0]); villain_visible.add(deck[1]);
+            auto v_now = evaluate(villain_visible);
             if (hero_now > v_now) { ++ahead; worsen += h < v; }
             if (hero_now < v_now) { ++behind; improve += h > v; }
         }
@@ -275,6 +303,20 @@ inline uint32_t bucket(const State& state, int hand) {
         | (uint32_t(stack) << 27) | (uint32_t(previous) << 29);
 }
 
+inline int legal_mask(const State& state, int amount) {
+    return 2 | (state.bets[state.actor] < std::max(state.bets[0], state.bets[1]) ? 1 : 0)
+        | (state.can_raise(amount) ? 4 : 0);
+}
+
+inline uint32_t bucket(const State& state, int hand, int mask) {
+    // Two spare key bits distinguish fold/raise availability; call is always legal.
+    return bucket(state, hand) | (uint32_t(mask & 1) << 30) | (uint32_t((mask >> 2) & 1) << 31);
+}
+
+inline int key_actions(uint32_t key) {
+    return 2 | int((key >> 30) & 1) | (int((key >> 31) & 1) << 2);
+}
+
 inline std::string hand_json(int hand, int street) {
     if (!street) {
         bool suited = hand % 2; hand /= 2;
@@ -301,7 +343,7 @@ inline std::string hand_json(int hand, int street) {
     return out + ']';
 }
 
-inline std::string bucket_json(uint32_t key, bool web_key = false) {
+inline std::string bucket_json(uint32_t key, bool web_key = false, bool with_actions = false) {
     int hand = key & 65535, actor = (key >> 16) & 1, street = (key >> 17) & 3;
     int history = (key >> 19) & 7, size = (key >> 22) & 7;
     int spr = (key >> 25) & 3, stack = (key >> 27) & 3, previous = (key >> 29) & 1;
@@ -309,13 +351,15 @@ inline std::string bucket_json(uint32_t key, bool web_key = false) {
     constexpr const char* stacks[] = {"short", "medium", "deep"};
     if (!street && web_key) {
         auto h = hand_json(hand, street);
-        return h.substr(1, h.size() - 2) + '|' + position + '|' + stacks[stack] + '|' + histories[history] + '|' + sizes[size];
+        return h.substr(1, h.size() - 2) + '|' + position + '|' + stacks[stack] + '|' + histories[history] + '|' + sizes[size]
+            + (with_actions ? "|" + std::to_string(key_actions(key)) : "");
     }
     std::string out = "[" + hand_json(hand, street) + ",\"" + position + "\",";
-    if (!street) return out + '"' + stacks[stack] + "\",\"" + histories[history] + "\",\"" + sizes[size] + "\"]";
+    if (!street) return out + '"' + stacks[stack] + "\",\"" + histories[history] + "\",\"" + sizes[size] + '"'
+        + (with_actions ? "," + std::to_string(key_actions(key)) : "") + ']';
     out += street == 1 ? std::to_string(history) : std::string("\"") + histories[history] + '"';
     out += std::string(",\"") + pot_sizes[size] + "\",\"" + sprs[spr] + '"';
     if (street > 1) out += previous ? ",true" : ",false";
-    return out + ']';
+    return out + (with_actions ? "," + std::to_string(key_actions(key)) : "") + ']';
 }
 } // namespace poker

@@ -66,7 +66,7 @@ class Node:
         return {a: 1.0 / len(actions) for a in actions}
 
     def accumulate_strategy(self, strat, actions):
-        """Update average strategy (called for traverser only)."""
+        """Update the two-player external-sampling average at opponent nodes."""
         for a in actions:
             self.strategy_sum[a] += strat[a]
 
@@ -103,7 +103,6 @@ def mccfr(cards, h, traverser):
 
     if p == traverser:
         # ── Traversing player: explore every action ──────────────────────────
-        node.accumulate_strategy(strat, actions)   # track average strategy
 
         vals = {a: mccfr(cards, h + a, traverser) for a in actions}
         v    = sum(strat[a] * vals[a] for a in actions)
@@ -116,6 +115,7 @@ def mccfr(cards, h, traverser):
 
     else:
         # ── Opponent: SAMPLE a single action ─────────────────────────────────
+        node.accumulate_strategy(strat, actions)
         probs = [strat[a] for a in actions]
         sampled_a = random.choices(actions, weights=probs)[0]
         return mccfr(cards, h + sampled_a, traverser)
@@ -169,8 +169,8 @@ Nash equilibrium for Kuhn Poker:
   J:cb   always fold
   Q:''   always check
   Q:b    call with prob ~1/3
-  Q:cb   call with prob ~2/3
-  K:''   always bet
+  Q:cb   call with prob alpha + 1/3
+  K:''   bet with prob 3 * alpha
   K:b    always call
   K:c    always bet (after checking)
   K:cb   always call

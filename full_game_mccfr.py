@@ -3,6 +3,8 @@ import pickle
 from pokerkit import Automation, Mode, NoLimitTexasHoldem, State
 from utils.training import TrainingNode, train_loop, training_main
 from utils.bucketer import Bucketer
+from utils.agent_policy import legal_actions, bucket_with_actions
+from utils.shared_nodes import read_snapshot
 
 
 
@@ -35,13 +37,13 @@ def mccfr(state: State, traverser: int, histories: list[list[str]], base_nodes: 
             bucket = bucketer.river_bucket(state, histories[3], histories[2])
 
     cur_actor = state.actor_index
-    actions = ['check/call', 'raise']
-    if state.bets[cur_actor] < max(state.bets) and state.can_fold():
-        actions.insert(0, 'fold')
+    amount = get_pf_raise_size(state, bucket) if state.street_index == 0 else get_halfp_raise_size(state, bucket)
+    actions = legal_actions(state, amount)
+    bucket = bucket_with_actions(bucket, actions)
 
     base_node = base_nodes.get(bucket)
 
-    if cur_actor == traverser and bucket not in delta_nodes:
+    if bucket not in delta_nodes:
         delta_nodes[bucket] = Node()
     delta_node = delta_nodes.get(bucket)
 
@@ -56,9 +58,6 @@ def mccfr(state: State, traverser: int, histories: list[list[str]], base_nodes: 
             return {a: max(current_regret(a), 0.0) / pos for a in actions}
         return {a: 1.0 / len(actions) for a in actions}
 
-    amount = get_pf_raise_size(state, bucket) if state.street_index == 0 else get_halfp_raise_size(state, bucket)
-    if not state.can_complete_bet_or_raise_to(amount):
-        actions.remove('raise')
     # Freeze regret matching before exploring children of this information set.
     strat = get_current_strategy(actions)
 
@@ -75,17 +74,19 @@ def mccfr(state: State, traverser: int, histories: list[list[str]], base_nodes: 
         return next_state, next_history
 
     if cur_actor == traverser:
-        delta_node.times_visited += 1
         utils = {}
         for action in actions:
             next_state, next_history = next_position(action)
             utils[action] = mccfr(next_state, traverser, next_history, base_nodes, delta_nodes, bucketer)
         node_util = sum(strat[a] * utils[a] for a in actions)
         for action in actions:
-            delta_node.strategy_sum[action] += strat[action]
             delta_node.regret_sum[action] += utils[action] - node_util
         return node_util
 
+    # Two-player external sampling: opponent reach is supplied by sampling.
+    delta_node.times_visited += 1
+    for action in actions:
+        delta_node.strategy_sum[action] += strat[action]
     action = random.choices(actions, weights=[strat[a] for a in actions])[0]
     next_state, next_history = next_position(action)
     return mccfr(next_state, traverser, next_history, base_nodes, delta_nodes, bucketer)
@@ -124,21 +125,17 @@ def run_chunk(args):
 
     from utils.card_bucketer import configure_caches
     configure_caches(cache_size)
-    base_nodes = pickle.loads(snapshot)
-    delta_nodes = {}
-    local_bucketer = Bucketer(samples)
-
-    for count in range(chunk_size):
-        state = create_state()
-        play_hand(
-            state,
-            traverser=(start + count) % 2,
-            base_nodes=base_nodes,
-            delta_nodes=delta_nodes,
-            bucketer=local_bucketer,
-        )
-
-    return delta_nodes, chunk_size
+    with read_snapshot(snapshot) as (base_nodes, delta_nodes):
+        local_bucketer = Bucketer(samples)
+        for count in range(chunk_size):
+            play_hand(
+                create_state(),
+                traverser=(start + count) % 2,
+                base_nodes=base_nodes,
+                delta_nodes=delta_nodes,
+                bucketer=local_bucketer,
+            )
+        return delta_nodes, chunk_size
 
 def merge_nodes(master: dict, delta: dict):
     for key, delta_node in delta.items():
@@ -157,7 +154,7 @@ def merge_nodes(master: dict, delta: dict):
 
 # ── Training loop ──────────────────────────────────────────────────────────────
 
-def train(iters=100_000, n_workers=1, merge_every=1000, **options):
+def train(iters=100_000, n_workers=None, merge_every=None, **options):
     return train_loop(create_state, play_hand, run_chunk, merge_nodes,
                       trainer="full-game", iters=iters, n_workers=n_workers,
                       merge_every=merge_every, **options)

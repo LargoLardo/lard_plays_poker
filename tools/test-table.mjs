@@ -65,12 +65,205 @@ try {
   assert.ok((await smoke.locator("#userCards").boundingBox()).width <= 1, "The held cards replace the flat card overlay");
   assert.equal(await smoke.locator("#agentCards .back").count(), 2);
   assert.equal(await smoke.locator("#modelStatus.ready").count(), 1);
+  assert.equal(await smoke.locator("#advancedRaises").isDisabled(), true, "Legacy models do not invent a raise split");
   assert.deepEqual([...handAssets].sort(), ["left.glb", "right.glb"], "Both local hand meshes load");
   assert.equal(await smoke.locator(".hand-meta #potLabel").count(), 1, "Pot stays in the controls");
   await smoke.waitForTimeout(700);
   await assertFits(smoke);
   await screenshot(smoke, "table-desktop");
   await smoke.close();
+
+  // Switching updates Study now and Play next hand, and a failed load is atomic.
+  const switching = await pageFor();
+  await switching.clock.install({ time: new Date("2026-10-04T12:00:00Z") });
+  await switching.clock.pauseAt(new Date("2026-10-04T12:00:01Z"));
+  await switching.addInitScript(() => { Math.random = () => .5; });
+  await forceCalls(switching);
+  const raisedPreflop = JSON.parse(await readFile("public/preflop-model.json", "utf8"));
+  const raisedPostflop = JSON.parse(await readFile("public/postflop-model.json", "utf8"));
+  for (const nodes of [raisedPreflop, raisedPostflop]) for (const key of Object.keys(nodes)) nodes[key] = [0, 0, 1, 50_000];
+  await switching.route("**/api/nodesets", (route) => route.fulfill({ json:[
+    { id:"raising", label:"Test raising", preflop:"/raising-pre.json", postflop:"/raising-post.json" },
+    { id:"sparse", label:"Test sparse", preflop:"/sparse-pre.json", postflop:"/raising-post.json" },
+    { id:"broken", label:"Unavailable", preflop:"/raising-pre.json", postflop:"/missing-post.json" },
+  ] }));
+  await switching.route("**/raising-pre.json", (route) => route.fulfill({ json:raisedPreflop }));
+  await switching.route("**/raising-post.json", (route) => route.fulfill({ json:raisedPostflop }));
+  await switching.route("**/missing-post.json", (route) => route.fulfill({ status:500 }));
+  await switching.route("**/sparse-pre.json", (route) => route.fulfill({ json:{
+    "AKo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 999],
+    "AAo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 1000],
+    "KKo|SB|deep|root|~2.0bb raise|3":[1, 0, 0, 600],
+    "KKo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 600],
+    "QQo|SB|deep|root|~2.0bb raise|3":[1, 0, 0, 999],
+    "QQo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 1000],
+    "22o|SB|deep|root|~2.0bb raise":[0, 1, 0, 999],
+    "33o|SB|deep|root|~2.0bb raise":[0, 1, 0, 1000],
+  } }));
+  let arenaRequest;
+  await switching.route("**/api/arena", (route) => {
+    arenaRequest = JSON.parse(route.request().postData());
+    const agent = { net_bb:0, bb_per_100:0, ci95_bb_per_100:[-1, 1], wins:10, losses:10, ties:0, coverage:{ decisions:100, trained:90 } };
+    return route.fulfill({ json:{ hands:20, duplicate_pairs:10, samples:3, elapsed_seconds:.01, a:agent, b:agent } });
+  });
+  await switching.goto(url);
+  await switching.waitForSelector("#modelStatus.ready", { state:"attached" });
+  await switching.locator("#sessionMenu summary").click();
+  await switching.selectOption("#nodesetSelect", "raising");
+  await switching.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  assert.match(await switching.locator("#modelStatus").textContent(), /applies next hand/);
+  await switching.locator("#studyTab").click();
+  assert.equal(await switching.locator("#rangeRaise").textContent(), "100.0%");
+  await switching.locator("#sessionMenu summary").click();
+  await switching.selectOption("#nodesetSelect", "broken");
+  await switching.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  assert.equal(await switching.locator("#nodesetSelect").inputValue(), "raising");
+  assert.equal(await switching.locator("#rangeRaise").textContent(), "100.0%");
+  assert.match(await switching.locator("#modelStatus").textContent(), /Still using Test raising/);
+  await switching.selectOption("#nodesetSelect", "sparse");
+  await switching.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  for (const hand of ["AKo", "KK", "22"]) {
+    const cell = switching.locator(`#rangeGrid [aria-label^="${hand} "]`);
+    assert.equal(await cell.isDisabled(), true, `${hand} is below 1,000 visits per node`);
+    assert.match(await cell.getAttribute("class"), /sparse/);
+    assert.equal(await cell.locator("small").textContent(), "—");
+  }
+  for (const hand of ["AA", "QQ", "33"]) {
+    assert.equal(await switching.locator(`#rangeGrid [aria-label^="${hand} "]`).isDisabled(), false, "Exactly 1,000 visits is visible");
+  }
+  assert.match(await switching.locator('#rangeGrid [aria-label^="QQ "]').getAttribute("aria-label"), /Raise 100.0%/, "Sparse masks are excluded before aggregation");
+  await switching.selectOption("#nodesetSelect", "raising");
+  await switching.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  await switching.locator("#playTab").click();
+  await switching.locator("#callButton").click();
+  await switching.clock.runFor(4100);
+  assert.equal(await switching.locator("#street").textContent(), "Flop", "The existing hand keeps its call policy");
+  assert.match(await switching.locator("#lastAction").textContent(), /checks/, "Postflop also keeps the previous model");
+  await switching.locator("#sessionMenu summary").click();
+  await switching.locator("#newHandTop").click();
+  await switching.clock.runFor(2100);
+  assert.match(await switching.locator("#lastAction").textContent(), /raises/, "The next hand uses the selected model");
+  await switching.reload();
+  await switching.waitForSelector("#modelStatus.ready", { state:"attached" });
+  assert.equal(await switching.locator("#nodesetSelect").inputValue(), "raising", "Selection survives reload");
+  await switching.setViewportSize({ width:320, height:568 });
+  await switching.locator("#sessionMenu summary").click();
+  const picker = await switching.locator("#nodesetSelect").boundingBox();
+  assert.ok(picker.x >= 0 && picker.x + picker.width <= 320, "The selector fits on a phone");
+  await switching.locator("#arenaTab").click();
+  await switching.selectOption("#arenaA", "raising");
+  await switching.selectOption("#arenaB", "sparse");
+  await switching.locator("#arenaHands").fill("20");
+  await switching.locator("#arenaSeed").fill("9");
+  await switching.locator("#arenaRun").click();
+  await switching.waitForSelector("#arenaResult tbody tr");
+  assert.deepEqual(arenaRequest, { a:"raising", b:"sparse", hands:20, seed:9 });
+  assert.equal(await switching.locator("#arenaResult tbody tr").count(), 2);
+  assert.match(await switching.locator("#arenaStatus").textContent(), /No clear winner/);
+  assert.equal(await switching.locator("#arenaRun").isDisabled(), false);
+  assert.ok(await switching.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Arena fits on a phone");
+  await switching.close();
+
+  // Native V5 uses five actions, sends visible cards/history, and ignores stale replies.
+  const native = await pageFor();
+  await native.clock.install({ time: new Date("2026-10-04T12:00:00Z") });
+  await native.clock.pauseAt(new Date("2026-10-04T12:00:01Z"));
+  await native.addInitScript(() => {
+    Math.random = () => .5;
+    localStorage.setItem("lard-plays-poker-nodeset", "v5");
+  });
+  await native.route("**/api/nodesets", (route) => route.fulfill({ json:[
+    { id:"v5", label:"Native V5", native:true, totalNodes:12345, preflop:"/v5-pre.json", postflop:"/v5-post.json" },
+    { id:"call-only-v5", label:"Native without raises", native:true, preflop:"/v5-call-only.json", postflop:"/v5-post.json" },
+  ] }));
+  await native.route("**/v5-call-only.json", (route) => route.fulfill({ json:{
+    "AAo|SB|deep|root|~2.0bb raise|7":[0, 1, 0, 1000, 0, 0, 0],
+  } }));
+  await native.route("**/v5-pre.json", (route) => route.fulfill({ json:{
+    "AKo|SB|deep|root|~2.0bb raise|7":[.1, .2, .7, 1000, .14, .21, .35],
+    "AAo|SB|deep|root|~2.0bb raise|7":[0, 1, 0, 1000, 0, 0, 0],
+    "KKo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 999, 1, 0, 0],
+  } }));
+  await native.route("**/v5-post.json", (route) => route.fulfill({ json:{} }));
+  const nativeRequests = [];
+  let delayedRoute;
+  await native.route("**/api/decision", (route) => {
+    nativeRequests.push(JSON.parse(route.request().postData()));
+    if (nativeRequests.length === 2) { delayedRoute = route; return; }
+    if (nativeRequests.length === 3) return route.fulfill({ status:500, json:{ error:"Test unavailable model" } });
+    return route.fulfill({ json:{ weights:[0, 0, 1, 0, 0], trained:true, visits:4000, bucket:1, history:"42" } });
+  });
+  await native.goto(url);
+  await native.waitForSelector("#modelStatus.ready", { state:"attached" });
+  assert.match(await native.locator("#modelStatus").textContent(), /12,345 nodes/);
+  assert.match(await native.locator("#spotCoverage").textContent(), /Raise combines small, pot, and all-in/);
+  await native.locator("#studyTab").click();
+  await native.locator("#advancedRaises").check();
+  await native.locator('[data-range-action="raise"]').click();
+  assert.equal(await native.locator("#raiseBreakdown").isVisible(), true);
+  assert.equal(await native.locator("#rangeSmallRaise").textContent(), "20.0%");
+  assert.equal(await native.locator("#rangePotRaise").textContent(), "30.0%");
+  assert.equal(await native.locator("#rangeAllIn").textContent(), "50.0%");
+  assert.equal(await native.locator("#rangeRaise").textContent(), "46.7%", "Conditional raise shares preserve overall frequency");
+  const advancedHand = native.locator('#rangeGrid [aria-label^="AKo "]');
+  assert.match(await advancedHand.getAttribute("aria-label"), /Small 20.0%, Pot 30.0%, All-in 50.0%/);
+  assert.match(await advancedHand.getAttribute("style"), /#e5b65f.*#d75f61.*#b898e8/);
+  assert.equal(await advancedHand.locator("small").textContent(), "70%", "The Raise view labels total raise frequency");
+  assert.match(await native.locator('#rangeGrid [aria-label^="AA "]').getAttribute("aria-label"), /No raises/);
+  assert.equal(await native.locator('#rangeGrid [aria-label^="KK "]').isDisabled(), true, "Sparse raise splits remain excluded");
+  await advancedHand.click();
+  assert.match(await native.locator("#rangeDetail").textContent(), /Among raises/);
+  await native.setViewportSize({ width:390, height:844 });
+  assert.ok(await native.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  const raiseToggle = await native.locator(".advanced-raise-option").boundingBox();
+  assert.ok(raiseToggle.x >= 0 && raiseToggle.x + raiseToggle.width <= 390, "The advanced toggle stays visible on a phone");
+  await screenshot(native, "study-advanced-raises-phone");
+  await native.setViewportSize({ width:1440, height:960 });
+  await screenshot(native, "study-advanced-raises");
+  await native.locator("#sessionMenu summary").click();
+  await native.selectOption("#nodesetSelect", "call-only-v5");
+  await native.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  for (const id of ["rangeSmallRaise", "rangePotRaise", "rangeAllIn"]) {
+    assert.equal(await native.locator(`#${id}`).textContent(), "—", "No raises has no conditional distribution");
+  }
+  await native.locator("#advancedRaises").uncheck();
+  assert.equal(await native.locator("#raiseBreakdown").isVisible(), false);
+  await native.locator("#advancedRaises").check();
+  await native.locator("#sessionMenu summary").click();
+  await native.selectOption("#nodesetSelect", "bundled");
+  await native.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  assert.equal(await native.locator("#advancedRaises").isDisabled(), true);
+  assert.equal(await native.locator("#advancedRaises").isChecked(), false);
+  assert.equal(await native.locator("#raiseBreakdown").isVisible(), false);
+  await native.selectOption("#nodesetSelect", "v5");
+  await native.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  await native.locator("#sessionMenu summary").click();
+  assert.doesNotMatch(await advancedHand.getAttribute("aria-label"), /Among raises/);
+  await native.locator("#playTab").click();
+  await native.locator("#raiseSlider").fill("3.5");
+  await native.locator("#raiseButton").click();
+  await native.clock.runFor(2100);
+  await native.waitForFunction(() => document.getElementById("lastAction").textContent.includes("Lard raises"));
+  assert.match(await native.locator("#lastAction").textContent(), /10.5 BB/);
+  assert.deepEqual(nativeRequests[0].history, [[2, 1.25, 0]], "Human sizes translate using pot after call");
+  assert.equal(nativeRequests[0].hero.length, 2);
+  assert.deepEqual(nativeRequests[0].board, []);
+  assert.deepEqual(Object.keys(nativeRequests[0]).sort(), ["actor", "board", "hero", "history", "nodeset", "street"]);
+  await native.locator("#callButton").click();
+  await native.clock.runFor(2100);
+  assert.ok(delayedRoute);
+  assert.equal(nativeRequests[1].board.length, 3);
+  assert.equal(nativeRequests[1].history.length, 3, "History includes both raises and the call");
+  await native.locator("#sessionMenu summary").click();
+  await native.locator("#newHandTop").click();
+  await delayedRoute.fulfill({ json:{ weights:[0, 0, 0, 0, 1], trained:true, visits:4000 } });
+  await native.waitForTimeout(20);
+  assert.equal(await native.locator("#lastAction").textContent(), "Blinds posted", "An old reply cannot act in a new hand");
+  await native.clock.runFor(2100);
+  await native.waitForFunction(() => document.getElementById("lastAction").textContent.includes("Lard calls"));
+  assert.match(await native.locator("#lastAction").textContent(), /0.5 BB/, "Native failure uses check/call");
+  assert.equal(await native.locator("#callButton").isDisabled(), false);
+  await native.close();
 
   // Force the trained action mix to check/call so every street is repeatable.
   const page = await pageFor();
