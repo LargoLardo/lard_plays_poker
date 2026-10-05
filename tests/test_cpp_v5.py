@@ -127,6 +127,7 @@ class CppV5Tests(unittest.TestCase):
         self.assertEqual(self.checkpoint.read_bytes(), data)
         rows = json.loads((exported / 'preflop-model.json').read_text())
         self.assertTrue(rows)
+        self.assertTrue(all(len(row) == 7 for row in rows.values()))
         self.assertTrue(all(row[:3] == [0, 0, 0] for row in rows.values() if row[3] < 1000))
         self.assertEqual(json.loads((exported / 'postflop-model.json').read_text()), {})
         report = audit(self.checkpoint)
@@ -134,6 +135,24 @@ class CppV5Tests(unittest.TestCase):
         self.assertEqual(report['metadata']['clusters'], [8, 8, 8])
         self.assertEqual(sum(row['nodes'] for row in report['streets'].values()), len(metadata['nodes']))
         self.assertEqual(len(report['metadata']['actions']), 5)
+
+    def test_export_retains_each_raise_size_without_rewriting_checkpoint(self):
+        metadata = read_v5(self.checkpoint)
+        data = bytearray(self.checkpoint.read_bytes())
+        index = next(i for i, (history, context) in enumerate(metadata['nodes']) if history == 1)
+        offset = metadata['records'] + index * 100
+        struct.pack_into('<5dQ', data, offset + 52, 1, 2, 3, 4, 5, 1000)
+        checkpoint = self.directory / 'raise-split.bin'
+        checkpoint.write_bytes(data)
+        exported = self.directory / 'raise-split-web'
+        self.train('--resume', checkpoint, '--iterations', 0, '--export', exported)
+        rows = json.loads((exported / 'preflop-model.json').read_text())
+        mature = next(row for row in rows.values() if row[3] == 1000)
+        for actual, expected in zip(mature, [1 / 15, 2 / 15, 12 / 15, 1000, 3 / 15, 4 / 15, 5 / 15]):
+            self.assertAlmostEqual(actual, expected)
+        self.assertAlmostEqual(sum(mature[4:7]), mature[2])
+        self.assertTrue(all(row[4:7] == [0, 0, 0] for row in rows.values() if row[3] < 1000))
+        self.assertEqual(checkpoint.read_bytes(), data)
 
     def test_river_features_match_exact_treys_opponent_classes(self):
         rng = random.Random(17)

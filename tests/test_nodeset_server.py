@@ -49,7 +49,9 @@ class NodesetServerTests(unittest.TestCase):
                 self.assertTrue(entry['native'])
                 self.assertGreater(entry['totalNodes'], 0)
                 with urlopen(address + entry['preflop'], timeout=20) as response:
-                    self.assertTrue(json.load(response))
+                    rows = json.load(response)
+                    self.assertTrue(rows)
+                    self.assertTrue(all(len(row) == 7 for row in rows.values()))
                 body = dict(nodeset=entry['id'], hero=['As', 'Kd'], board=[], history=[], actor=1, street=0)
                 first = post('/api/decision', body)
                 process = server.inference_process

@@ -18,7 +18,8 @@ const ui = Object.fromEntries([
   "agentBet", "userBet", "pot", "board", "message", "street", "toCall", "lastAction", "actions",
   "foldButton", "callButton", "raiseButton", "raiseSlider", "raiseOutput", "finishedActions", "newHandButton", "cancelNextHandButton",
   "newHandTop", "newGameTop", "resultDetail", "nextHandCountdown", "rangePosition", "rangeHistory", "rangeStack", "rangeSize", "rangeGrid", "rangeFold", "rangeCall", "rangeRaise",
-  "foldBar", "callBar", "raiseBar", "rangeDetail", "spotCoverage",
+  "foldBar", "callBar", "raiseBar", "rangeDetail", "spotCoverage", "advancedRaises", "raiseBreakdown",
+  "rangeSmallRaise", "rangePotRaise", "rangeAllIn", "smallRaiseBar", "potRaiseBar", "allInBar",
   "arenaForm", "arenaA", "arenaB", "arenaHands", "arenaSeed", "arenaRun", "arenaStatus", "arenaResult",
 ].map((id) => [id, $(id)]));
 
@@ -397,6 +398,11 @@ function rangeHand(row, column) {
 }
 
 function initializeRangeExplorer() {
+  ui.advancedRaises.disabled = !activeNodeset?.native || !Object.values(model).some((row) => row.length >= 7);
+  if (ui.advancedRaises.disabled) ui.advancedRaises.checked = false;
+  ui.advancedRaises.parentElement.title = ui.advancedRaises.disabled
+    ? "Select a V5 checkpoint to view individual raise sizes."
+    : "Show the saved small, pot, and all-in raise frequencies.";
   const spots = [...new Set(Object.keys(model).map((key) => key.split("|").slice(1).join("|")))];
   const historyOrder = { root:0, limped:1, vs_open:2, vs_3bet:3, vs_4bet:4 };
   spots.sort((a, b) => {
@@ -435,19 +441,23 @@ function populateRangeFilters(startIndex) {
     filters[index].element.disabled = values.length <= 1;
   }
   const sizingCount = ui.rangeSize.options.length;
-  ui.spotCoverage.textContent = activeNodeset?.native
-    ? "Raise combines small, pot, and all-in choices. Nodes under 1,000 visits are excluded."
-    : !sizingCount ? "No averaged preflop nodes yet." : sizingCount === 1
+  if (!activeNodeset?.native) ui.spotCoverage.textContent = !sizingCount ? "No averaged preflop nodes yet." : sizingCount === 1
     ? "One sizing was trained for this node; additional sizes require a wider training tree."
     : `${sizingCount} trained sizings are available for this node.`;
 }
 
 function renderRange() {
+  const advanced = ui.advancedRaises.checked && !ui.advancedRaises.disabled;
+  ui.raiseBreakdown.classList.toggle("hidden", !advanced);
+  if (activeNodeset?.native) ui.spotCoverage.textContent = advanced
+    ? "Raise colors show the split between sizes; Raise cell percentages show total raise frequency. Nodes under 1,000 visits are excluded."
+    : "Raise combines small, pot, and all-in choices. Nodes under 1,000 visits are excluded.";
   const spot = [ui.rangePosition.value, ui.rangeStack.value, ui.rangeHistory.value, ui.rangeSize.value].join("|");
-  const totals = [0, 0, 0];
+  const totals = [0, 0, 0, 0, 0, 0];
   let totalCombos = 0;
   const cells = [];
   const colors = ["#4d90c7", "#4dc78e", "#d75f61"];
+  const raiseColors = ["#e5b65f", "#d75f61", "#b898e8"];
   const modeIndex = ACTIONS.indexOf(rangeMode);
   const availableMasks = [...new Set(rangeSpots.filter((s) => [s.position, s.stack, s.history, s.size].join("|") === spot).map((s) => s.mask).filter(Boolean))];
 
@@ -459,28 +469,42 @@ function renderRange() {
     // Range display aggregates contexts; actual decisions always match one mask.
     const visits = rows.reduce((sum, row) => sum + row[3], 0);
     const legacy = model[baseKey];
-    const node = (legacy?.[3] >= STUDY_MIN_VISITS ? legacy : null) || (visits ? [0, 1, 2].map((a) => rows.reduce((sum, row) => sum + row[a] * row[3], 0) / visits).concat(visits) : null);
+    const average = (a) => rows.reduce((sum, row) => sum + row[a] * row[3], 0) / visits;
+    const node = (legacy?.[3] >= STUDY_MIN_VISITS ? legacy : null) || (visits
+      ? [0, 1, 2].map(average).concat(visits, ...(advanced ? [4, 5, 6].map(average) : [])) : null);
     if (!node) {
       const sparse = legacy || rawRows.length;
       const title = sparse ? `${hand.label} — Sparse: fewer than 1,000 visits per node` : `${hand.label} — Untrained`;
       cells.push(`<button class="range-cell missing${sparse ? " sparse" : ""}" disabled title="${title}" aria-label="${title}"><strong>${hand.label}</strong><small>—</small></button>`);
       continue;
     }
-    const frequencies = node.slice(0, 3);
-    frequencies.forEach((frequency, index) => { totals[index] += frequency * hand.combos; });
+    const overall = node.slice(0, 3);
+    const raiseSizes = advanced ? node.slice(4, 7) : [0, 0, 0];
+    const frequencies = advanced ? overall.slice(0, 2).concat(raiseSizes) : overall;
+    overall.concat(raiseSizes).forEach((frequency, index) => { totals[index] += frequency * hand.combos; });
     totalCombos += hand.combos;
     let background;
     let shownFrequency;
-    if (rangeMode === "all") {
-      const foldEnd = frequencies[0] * 100, callEnd = (frequencies[0] + frequencies[1]) * 100;
-      background = `linear-gradient(90deg,${colors[0]} 0 ${foldEnd}%,${colors[1]} ${foldEnd}% ${callEnd}%,${colors[2]} ${callEnd}% 100%)`;
-      shownFrequency = Math.max(...frequencies);
+    if (rangeMode === "all" || (advanced && rangeMode === "raise")) {
+      const distribution = rangeMode === "all" ? frequencies : raiseSizes.map((weight) => overall[2] > 0 ? weight / overall[2] : 0);
+      const palette = rangeMode === "all" ? (advanced ? colors.slice(0, 2).concat(raiseColors) : colors) : raiseColors;
+      let edge = 0;
+      const segments = distribution.map((frequency, index) => {
+        const start = edge;
+        edge += frequency * 100;
+        return `${palette[index]} ${start}% ${edge}%`;
+      });
+      background = rangeMode === "raise" && overall[2] === 0 ? "#101c18" : `linear-gradient(90deg,${segments.join(",")})`;
+      shownFrequency = rangeMode === "all" ? Math.max(...frequencies) : overall[2];
     } else {
-      shownFrequency = frequencies[modeIndex];
+      shownFrequency = overall[modeIndex];
       const alpha = .08 + shownFrequency * .92;
       background = `color-mix(in srgb, ${colors[modeIndex]} ${alpha * 100}%, #101c18)`;
     }
-    const title = `${hand.label} — Fold ${(frequencies[0] * 100).toFixed(1)}%, Call ${(frequencies[1] * 100).toFixed(1)}%, Raise ${(frequencies[2] * 100).toFixed(1)}% · ${node[3].toLocaleString()} visits`;
+    const split = advanced ? overall[2] > 0
+      ? ` · Among raises: ${["Small", "Pot", "All-in"].map((label, a) => `${label} ${(raiseSizes[a] / overall[2] * 100).toFixed(1)}%`).join(", ")}`
+      : " · No raises" : "";
+    const title = `${hand.label} — Fold ${(overall[0] * 100).toFixed(1)}%, Call ${(overall[1] * 100).toFixed(1)}%, Raise ${(overall[2] * 100).toFixed(1)}%${split} · ${node[3].toLocaleString()} visits`;
     cells.push(`<button class="range-cell" style="background:${background}" title="${title}" aria-label="${title}"><strong>${hand.label}</strong><small>${Math.round(shownFrequency * 100)}%</small></button>`);
   }
   ui.rangeGrid.innerHTML = cells.join("");
@@ -491,6 +515,12 @@ function renderRange() {
   const averages = totals.map((total) => totalCombos ? total / totalCombos : 0);
   [ui.rangeFold, ui.rangeCall, ui.rangeRaise].forEach((element, index) => { element.textContent = `${(averages[index] * 100).toFixed(1)}%`; });
   [ui.foldBar, ui.callBar, ui.raiseBar].forEach((element, index) => { element.style.width = `${averages[index] * 100}%`; });
+  [ui.rangeSmallRaise, ui.rangePotRaise, ui.rangeAllIn].forEach((element, index) => {
+    element.textContent = totals[2] > 0 ? `${(totals[index + 3] / totals[2] * 100).toFixed(1)}%` : "—";
+  });
+  [ui.smallRaiseBar, ui.potRaiseBar, ui.allInBar].forEach((element, index) => {
+    element.style.width = `${totals[2] > 0 ? totals[index + 3] / totals[2] * 100 : 0}%`;
+  });
 }
 
 function postflopDecisionContext() {
@@ -667,6 +697,7 @@ document.querySelectorAll("[data-range-action]").forEach((button) => button.addE
   document.querySelectorAll("[data-range-action]").forEach((item) => item.classList.toggle("active", item === button));
   renderRange();
 }));
+ui.advancedRaises.addEventListener("change", renderRange);
 document.querySelectorAll(".session-popover button").forEach((button) => button.addEventListener("click", () => { $("sessionMenu").open = false; }));
 document.addEventListener("click", (event) => {
   if (!$("sessionMenu").contains(event.target)) $("sessionMenu").open = false;

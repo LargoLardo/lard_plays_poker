@@ -21,7 +21,7 @@ from cpp.run import build
 
 
 def checkpoint_id(path, root, stat):
-    stamp = f'{path.relative_to(root).as_posix()}:{stat.st_mtime_ns}:{stat.st_size}'
+    stamp = f'{path.relative_to(root).as_posix()}:{stat.st_mtime_ns}:{stat.st_size}:raise-split-v1'
     return hashlib.sha256(stamp.encode()).hexdigest()[:24]
 
 

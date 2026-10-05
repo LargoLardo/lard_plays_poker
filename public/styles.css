@@ -130,6 +130,13 @@ main { margin: 0 auto; }
 .range-summary { padding:16px; border:1px solid var(--line); border-radius:10px; background:#091510; }.frequency-row { display:flex; justify-content:space-between; align-items:center; margin-top:14px; font-size:11px; }.frequency-row span { color:#c8d4cf; }.frequency-row strong { font:500 11px DM Mono; }.frequency-bar { display:flex; overflow:hidden; height:7px; margin-top:16px; border-radius:5px; background:#16231e; }.frequency-bar i { height:100%; }.frequency-bar i:nth-child(1) { background:#4d90c7; }.frequency-bar i:nth-child(2) { background:#4dc78e; }.frequency-bar i:nth-child(3) { background:#d75f61; }.range-summary p { margin:16px 0 0; color:var(--muted); font-size:10px; line-height:1.55; }
 
 .range-panel { width: min(1040px, 90%); margin: 84px auto 40px; background: #111812; }
+.advanced-raise-option { display: flex; align-items: center; gap: 6px; margin-left: auto; padding: 0 4px; color: var(--muted); font-size: 11px; white-space: nowrap; cursor: pointer; }
+.advanced-raise-option input { accent-color: #d7bd7f; }
+.advanced-raise-option:has(input:disabled) { opacity: .45; cursor: default; }
+.raise-breakdown { grid-column: 1 / -1; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+.small-raise-dot, .raise-distribution i:nth-child(1) { background: #e5b65f; }
+.pot-raise-dot, .raise-distribution i:nth-child(2) { background: #d75f61; }
+.all-in-dot, .raise-distribution i:nth-child(3) { background: #b898e8; }
 .arena-form { display: grid; grid-template-columns: 2fr 2fr 1fr 1fr auto; align-items: end; gap: 12px; }
 .arena-form label { min-width: 0; display: grid; gap: 7px; }
 .arena-form label span, .arena-note { color: var(--muted); font-size: 11px; }
@@ -184,7 +191,8 @@ main { margin: 0 auto; }
   .range-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .range-summary .eyebrow, .range-summary p, .frequency-bar { grid-column: 1 / -1; }
   .frequency-row { margin-top: 4px; }
-  .range-toolbar { overflow: auto; }
+  .range-toolbar { overflow: auto; flex-wrap: wrap; }
+  .advanced-raise-option { flex-basis: 100%; justify-content: flex-end; padding: 4px 0; }
   .range-mode { white-space: nowrap; }
 }
 @media (prefers-reduced-motion: reduce) {

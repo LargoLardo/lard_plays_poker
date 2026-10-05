@@ -65,6 +65,7 @@ try {
   assert.ok((await smoke.locator("#userCards").boundingBox()).width <= 1, "The held cards replace the flat card overlay");
   assert.equal(await smoke.locator("#agentCards .back").count(), 2);
   assert.equal(await smoke.locator("#modelStatus.ready").count(), 1);
+  assert.equal(await smoke.locator("#advancedRaises").isDisabled(), true, "Legacy models do not invent a raise split");
   assert.deepEqual([...handAssets].sort(), ["left.glb", "right.glb"], "Both local hand meshes load");
   assert.equal(await smoke.locator(".hand-meta #potLabel").count(), 1, "Pot stays in the controls");
   await smoke.waitForTimeout(700);
@@ -173,8 +174,16 @@ try {
   });
   await native.route("**/api/nodesets", (route) => route.fulfill({ json:[
     { id:"v5", label:"Native V5", native:true, totalNodes:12345, preflop:"/v5-pre.json", postflop:"/v5-post.json" },
+    { id:"call-only-v5", label:"Native without raises", native:true, preflop:"/v5-call-only.json", postflop:"/v5-post.json" },
   ] }));
-  await native.route("**/v5-pre.json", (route) => route.fulfill({ json:{ "AKo|SB|deep|root|~2.0bb raise|7":[0, 1, 0, 1000] } }));
+  await native.route("**/v5-call-only.json", (route) => route.fulfill({ json:{
+    "AAo|SB|deep|root|~2.0bb raise|7":[0, 1, 0, 1000, 0, 0, 0],
+  } }));
+  await native.route("**/v5-pre.json", (route) => route.fulfill({ json:{
+    "AKo|SB|deep|root|~2.0bb raise|7":[.1, .2, .7, 1000, .14, .21, .35],
+    "AAo|SB|deep|root|~2.0bb raise|7":[0, 1, 0, 1000, 0, 0, 0],
+    "KKo|SB|deep|root|~2.0bb raise|7":[0, 0, 1, 999, 1, 0, 0],
+  } }));
   await native.route("**/v5-post.json", (route) => route.fulfill({ json:{} }));
   const nativeRequests = [];
   let delayedRoute;
@@ -188,6 +197,49 @@ try {
   await native.waitForSelector("#modelStatus.ready", { state:"attached" });
   assert.match(await native.locator("#modelStatus").textContent(), /12,345 nodes/);
   assert.match(await native.locator("#spotCoverage").textContent(), /Raise combines small, pot, and all-in/);
+  await native.locator("#studyTab").click();
+  await native.locator("#advancedRaises").check();
+  await native.locator('[data-range-action="raise"]').click();
+  assert.equal(await native.locator("#raiseBreakdown").isVisible(), true);
+  assert.equal(await native.locator("#rangeSmallRaise").textContent(), "20.0%");
+  assert.equal(await native.locator("#rangePotRaise").textContent(), "30.0%");
+  assert.equal(await native.locator("#rangeAllIn").textContent(), "50.0%");
+  assert.equal(await native.locator("#rangeRaise").textContent(), "46.7%", "Conditional raise shares preserve overall frequency");
+  const advancedHand = native.locator('#rangeGrid [aria-label^="AKo "]');
+  assert.match(await advancedHand.getAttribute("aria-label"), /Small 20.0%, Pot 30.0%, All-in 50.0%/);
+  assert.match(await advancedHand.getAttribute("style"), /#e5b65f.*#d75f61.*#b898e8/);
+  assert.equal(await advancedHand.locator("small").textContent(), "70%", "The Raise view labels total raise frequency");
+  assert.match(await native.locator('#rangeGrid [aria-label^="AA "]').getAttribute("aria-label"), /No raises/);
+  assert.equal(await native.locator('#rangeGrid [aria-label^="KK "]').isDisabled(), true, "Sparse raise splits remain excluded");
+  await advancedHand.click();
+  assert.match(await native.locator("#rangeDetail").textContent(), /Among raises/);
+  await native.setViewportSize({ width:390, height:844 });
+  assert.ok(await native.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  const raiseToggle = await native.locator(".advanced-raise-option").boundingBox();
+  assert.ok(raiseToggle.x >= 0 && raiseToggle.x + raiseToggle.width <= 390, "The advanced toggle stays visible on a phone");
+  await screenshot(native, "study-advanced-raises-phone");
+  await native.setViewportSize({ width:1440, height:960 });
+  await screenshot(native, "study-advanced-raises");
+  await native.locator("#sessionMenu summary").click();
+  await native.selectOption("#nodesetSelect", "call-only-v5");
+  await native.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  for (const id of ["rangeSmallRaise", "rangePotRaise", "rangeAllIn"]) {
+    assert.equal(await native.locator(`#${id}`).textContent(), "—", "No raises has no conditional distribution");
+  }
+  await native.locator("#advancedRaises").uncheck();
+  assert.equal(await native.locator("#raiseBreakdown").isVisible(), false);
+  await native.locator("#advancedRaises").check();
+  await native.locator("#sessionMenu summary").click();
+  await native.selectOption("#nodesetSelect", "bundled");
+  await native.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  assert.equal(await native.locator("#advancedRaises").isDisabled(), true);
+  assert.equal(await native.locator("#advancedRaises").isChecked(), false);
+  assert.equal(await native.locator("#raiseBreakdown").isVisible(), false);
+  await native.selectOption("#nodesetSelect", "v5");
+  await native.waitForFunction(() => !document.getElementById("nodesetSelect").hasAttribute("aria-busy"));
+  await native.locator("#sessionMenu summary").click();
+  assert.doesNotMatch(await advancedHand.getAttribute("aria-label"), /Among raises/);
+  await native.locator("#playTab").click();
   await native.locator("#raiseSlider").fill("3.5");
   await native.locator("#raiseButton").click();
   await native.clock.runFor(2100);

@@ -51,6 +51,13 @@ Study greys out nodes with fewer than **1,000 visits**. A mixed-context hand cel
 includes only nodes meeting that threshold, and the frequency summary excludes
 sparse nodes too. This affects Study display only.
 
+With a V5 checkpoint selected, enable **Advanced raises** in Study to split
+small, pot, and all-in raises. The summary shows their percentages **among
+raises**; hovering or tapping a hand shows its own split. Mixed strategy uses
+five colors, and the Raise view colors show the three-way split while each
+cell's number remains its total raise frequency. Legacy models keep the
+combined Raise view because they do not store separate sizing choices.
+
 The **Arena** tab compares two checkpoints using duplicate deals: each deal is
 played twice with the agents swapping seats, starting with 100 BB each. It shows
 net BB, BB/100, an approximate 95% interval based on duplicate pairs, wins/losses/

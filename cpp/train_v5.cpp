@@ -308,7 +308,7 @@ inline void load(Model& model, const fs::path& path) {
     if (in.peek() != EOF) throw std::runtime_error("Trailing V5 checkpoint data");
 }
 inline void export_web(const Model& model, const fs::path& directory) {
-    struct Row { std::array<double, 3> weights{}; uint64_t visits = 0, sparse_visits = 0; };
+    struct Row { std::array<double, 5> weights{}; uint64_t visits = 0, sparse_visits = 0; };
     std::map<std::string, Row> rows;
     model.nodes.each([&](const Key& key, const Node& node) {
         if ((key.context >> 17) & 3) return;
@@ -319,9 +319,7 @@ inline void export_web(const Model& model, const fs::path& directory) {
         double total = std::accumulate(node.strategy.begin(), node.strategy.end(), 0.0);
         if (node.visits < 1000 || total <= 0) { row.sparse_visits = std::max(row.sparse_visits, node.visits); return; }
         row.visits += node.visits;
-        row.weights[0] += node.strategy[0] / total * node.visits;
-        row.weights[1] += node.strategy[1] / total * node.visits;
-        row.weights[2] += (node.strategy[2] + node.strategy[3] + node.strategy[4]) / total * node.visits;
+        for (int a = 0; a < action_count; ++a) row.weights[a] += node.strategy[a] / total * node.visits;
     });
     make_parent(directory / "preflop-model.json");
     auto path = directory / "preflop-model.json", temporary = fs::path(path.string() + ".tmp");
@@ -330,8 +328,15 @@ inline void export_web(const Model& model, const fs::path& directory) {
         if (!first) out << ',';
         first = false;
         out << quoted(item.first) << ":[";
-        for (int a = 0; a < 3; ++a) { if (a) out << ','; out << (item.second.visits ? item.second.weights[a] / item.second.visits : 0); }
-        out << ',' << (item.second.visits ? item.second.visits : std::min(uint64_t(999), item.second.sparse_visits)) << ']';
+        for (int a = 0; a < 3; ++a) {
+            if (a) out << ',';
+            double weight = a == 2 ? item.second.weights[2] + item.second.weights[3] + item.second.weights[4] : item.second.weights[a];
+            out << (item.second.visits ? weight / item.second.visits : 0);
+        }
+        out << ',' << (item.second.visits ? item.second.visits : std::min(uint64_t(999), item.second.sparse_visits));
+        // Keep the original fold/call/raise/visits columns; append the raise split.
+        for (int a = 2; a < action_count; ++a) out << ',' << (item.second.visits ? item.second.weights[a] / item.second.visits : 0);
+        out << ']';
     }
     out << '}'; finish_file(out, temporary, path);
     path = directory / "postflop-model.json"; temporary = path.string() + ".tmp";

@@ -72,7 +72,10 @@ Select a V5 checkpoint in the existing local browser via **••• → Nodeset
 Play uses a persistent native inference process with the embedded abstraction;
 it sends only the agent's cards, visible board, and public actions. Study shows
 a preflop projection combining the raise choices, excluding each source node
-below 1,000 visits before aggregation. Postflop policies stay native, so no
+below 1,000 visits before aggregation. Study's **Advanced raises** option shows
+the saved small/pot/all-in distribution, both per hand and for the selected
+range. The split percentages are conditional on raising. Postflop policies
+stay native, so no
 large JSON export or approximate JavaScript card bucketer is needed. A V5
 selection requires `tools/serve.py`; static hosting keeps the bundled model.
 
