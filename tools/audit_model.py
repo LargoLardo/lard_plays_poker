@@ -21,8 +21,40 @@ RANKS = '23456789TJQKA'
 def cpp_records(source):
     with open(source, 'rb') as stream:
         magic = stream.read(8)
-        if magic not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3', b'LARDCPP4'):
+        if magic not in (b'LARDCPP1', b'LARDCPP2', b'LARDCPP3', b'LARDCPP4', b'LARDCPP5'):
             raise ValueError('Unsupported C++ checkpoint')
+        if magic == b'LARDCPP5':
+            mode, samples, workers, chunk, iterations, count, touches, linear, every, periods, length = struct.unpack('<IIIIQQQIQQI', stream.read(64))
+            if length > 20_000:
+                raise ValueError('Invalid RNG metadata')
+            stream.read(length)
+            feature_samples, feature_seed, examples = struct.unpack('<IQQ', stream.read(20))
+            clusters = []
+            for _ in range(3):
+                size, = struct.unpack('<I', stream.read(4))
+                if not 1 <= size <= 4096:
+                    raise ValueError('Invalid abstraction size')
+                clusters.append(size)
+                stream.read(size * 32 * 8)
+            yield dict(format='LARDCPP5', mode='full', samples=feature_samples, iterations=iterations,
+                       algorithm='linear' if linear else 'vanilla', schema=3, workers=workers,
+                       chunk_size=chunk, nodes_touched=touches, discount_every=every,
+                       discount_periods=periods, clusters=clusters, feature_seed=feature_seed,
+                       examples_per_street=examples, actions=['fold', 'check/call', 'small', 'pot', 'all-in'])
+            for _ in range(count):
+                history, context, *row = struct.unpack('<QI10dQ', stream.read(100))
+                street = (context >> 17) & 3
+                bucket = None
+                if street == 0:
+                    hand = context & 65535
+                    suited, ranks = hand % 2, hand // 2
+                    bucket = (RANKS[ranks // 13] + RANKS[ranks % 13] + ('s' if suited else 'o'),
+                              'SB' if (context >> 16) & 1 else 'BB', 'deep',
+                              'root' if history == 1 else f'history:{history}')
+                yield STREETS[street], bucket, row[:5], row[5:10], row[10]
+            if stream.read(1):
+                raise ValueError('Unexpected trailing checkpoint data')
+            return
         mode, samples = struct.unpack('<II', stream.read(8))
         workers, chunk = struct.unpack('<II', stream.read(8)) if magic == b'LARDCPP4' else (1, 64)
         iterations, count, length = struct.unpack('<QQI', stream.read(20))
@@ -100,7 +132,7 @@ def audit(source, swap_positions=False):
         combinations = [6 if hand[0] == hand[1] else 4 if hand[2] == 's' else 12 for hand, _ in sb_roots]
         report['sb_root_combo_weighted'] = {
             action: sum(n * row['probabilities'][a] for n, (_, row) in zip(combinations, sb_roots)) / sum(combinations)
-            for a, action in enumerate(ACTIONS)}
+            for a, action in enumerate(report['metadata'].get('actions', ACTIONS))}
         report['sb_root_hand_classes'] = len(sb_roots)
     return report
 

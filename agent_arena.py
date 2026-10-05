@@ -45,22 +45,26 @@ def run_match(a, b, *, hands=10_000, seed=1, samples=0, fallback='uniform',
         raise ValueError('Samples must be 0..1000000 and seed an unsigned 64-bit integer')
     if fallback not in ('uniform', 'call'):
         raise ValueError('Fallback must be uniform or call')
-    paths = [Path(a).resolve(), Path(b).resolve()]
+    paths = [str(path) if str(path) in ('baseline:call', 'baseline:random', 'baseline:pot') else Path(path).resolve() for path in (a, b)]
     for path in paths:
+        if isinstance(path, str):
+            continue
         if path.suffix not in ('.bin', '.pkl') or not path.is_file():
             raise ValueError(f'Choose an existing .bin or .pkl checkpoint: {path}')
     with tempfile.TemporaryDirectory(prefix='lard-arena-') as directory:
         policies = []
         metadata = {}
         for index, path in enumerate(paths):
-            if path.suffix == '.pkl':
+            if isinstance(path, str):
+                policies.append(path)
+            elif path.suffix == '.pkl':
                 converted = Path(directory) / f'{index}.policy'
                 metadata[index] = python_policy(path, converted)
                 policies.append(converted)
             else:
                 policies.append(path)
         if memory_mb is None:
-            memory_mb = max(256, (max(path.stat().st_size for path in policies) * 8 + 1_048_575) // 1_048_576)
+            memory_mb = max(256, (max((path.stat().st_size for path in policies if isinstance(path, Path)), default=0) * 8 + 1_048_575) // 1_048_576)
         if memory_mb < 4 or memory_mb > 1_048_576:
             raise ValueError('Memory budget must be 4..1048576 MiB per agent')
         command = [str(build(arena=True)), '--a', str(policies[0]), '--b', str(policies[1]),
@@ -89,8 +93,8 @@ def run_match(a, b, *, hands=10_000, seed=1, samples=0, fallback='uniform',
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('a', help='Checkpoint A (.bin or .pkl)')
-    parser.add_argument('b', help='Checkpoint B (.bin or .pkl)')
+    parser.add_argument('a', help='Checkpoint A (.bin/.pkl) or baseline:call/random/pot')
+    parser.add_argument('b', help='Checkpoint B (.bin/.pkl) or baseline:call/random/pot')
     parser.add_argument('--hands', type=int, default=10_000, help='Even hand count, split into duplicate pairs')
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--samples', type=int, default=0, help='Equity samples; 0 uses the larger recorded training count')

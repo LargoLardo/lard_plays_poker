@@ -10,13 +10,17 @@ import sys
 CPP = Path(__file__).resolve().parent
 
 
-def build(test=False, *, arena=False):
-    name = 'arena' if arena else 'test' if test else 'train'
+def build(test=False, *, arena=False, model='v4'):
+    if model not in ('v4', 'v5'):
+        raise ValueError('Choose model v4 or v5')
+    name = 'arena' if arena else ('test' if test else 'train') + ('_v5' if model == 'v5' else '')
     directory = CPP / 'build'
     directory.mkdir(exist_ok=True)
     suffix = '.exe' if os.name == 'nt' else ''
     binary = directory / (name + suffix)
     sources = [CPP / 'poker.hpp', CPP / 'trainer.cpp', Path(__file__)]
+    if model == 'v5' or arena:
+        sources.extend([CPP / 'model_v5.hpp', CPP / 'train_v5.cpp'])
     if test or arena:
         sources.append(CPP / (name + '.cpp'))
     if binary.exists() and binary.stat().st_mtime_ns >= max(p.stat().st_mtime_ns for p in sources):
@@ -27,7 +31,7 @@ def build(test=False, *, arena=False):
     if not compiler or not compiler[0]:
         raise RuntimeError('Install a C++17 compiler. On Windows, use a Visual Studio Developer Command Prompt, or set CXX to g++/clang++.')
     temporary = directory / (name + '.tmp' + suffix)
-    source = CPP / (name + '.cpp' if test or arena else 'trainer.cpp')
+    source = CPP / (name + '.cpp' if test or arena or model == 'v5' else 'trainer.cpp')
     if Path(compiler[0]).stem.lower() in ('cl', 'clang-cl'):
         flags = ['/nologo', '/std:c++17', '/O2', '/EHsc', '/W4', str(source),
                  '/Fe:' + str(temporary), '/Fo:' + str(directory / (name + '.obj'))]
@@ -44,11 +48,18 @@ def build(test=False, *, arena=False):
 
 if __name__ == '__main__':
     arguments = sys.argv[1:]
+    model = 'v4'
+    if '--model' in arguments:
+        index = arguments.index('--model')
+        if index + 1 >= len(arguments):
+            sys.exit('--model requires v4 or v5')
+        model = arguments.pop(index + 1)
+        arguments.pop(index)
     test = bool(arguments and arguments[0] == '--test')
     if test:
         arguments.pop(0)
     try:
-        command = [str(build(test)), *arguments]
+        command = [str(build(test, model=model)), *arguments]
         if os.name != 'nt':
             os.execv(command[0], command)
         # Windows console events also reach the child; let it finish/save its batch.

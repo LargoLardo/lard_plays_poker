@@ -1,4 +1,99 @@
-# Standalone C++ MCCFR trainer
+# C++ poker training
+
+## V5 (recommended for new runs)
+
+V5 is the new C++ model. The original C++ V4 and Python trainers remain available
+as legacy implementations; their checkpoints are preserved. V5 needs a fresh
+training run because its information sets and actions differ.
+
+Build a frozen card abstraction once, then train:
+
+```bash
+python cpp/run.py --model v5 --build-abstraction nodesets/cpp/v5-cards.abs --workers 0
+python cpp/run.py --model v5 --abstraction nodesets/cpp/v5-cards.abs \
+  --iterations 10000000 --snapshot-every 1000000 --output nodesets/cpp/full-v5.bin
+```
+
+The local development checkout already has this asset and a 1M-hand V5 checkpoint.
+Continue it with:
+
+```bash
+python cpp/run.py --model v5 --resume nodesets/cpp/full-v5.bin \
+  --iterations 10000000 --snapshot-every 1000000
+```
+
+`--iterations` means additional hands. Use `venv/bin/python` on the development
+Mac, or `py -3` in a Windows Developer Command Prompt. The same C++17 launcher
+supports MSVC, Clang, and GCC. It defaults to V4 when `--model` is omitted, and
+`run.sh` continues to launch V4. Always select `--model v5` for the new trainer.
+
+V5 defaults to all detected CPUs (1–256), a **4 GiB working allocation budget**,
+a 256 MiB bounded assignment cache, and a 5M-node cap. The table is shared across
+threads. Node growth, rehash peaks, local updates, and assignment caches are
+budgeted; runtime/thread stacks and allocator overhead are additional. Nodes
+are never evicted or frozen. A failed hand/batch and its RNG draws roll back,
+then the last completed state is saved. On a small budget, reduce `--cache-mb`
+and `--chunk-size`; `--memory-mb 128 --cache-mb 4 --workers 4 --chunk-size 4`
+is useful for small test abstractions. More workers do not multiply the model.
+
+The asset defaults to 50,000 examples per street, 256/512/256 flop/turn/river
+clusters, 512 samples, and six clustering rounds. Suit-equivalent visible cards
+produce identical deterministic features and bucket IDs. Features combine a
+16-bin CDF of future equity, strength against eight opponent hand classes, and
+made-hand/blocker/board features. River equity enumerates all 990 possible
+opponent hands. The CDF uses earth mover distance; other components use squared
+distance. Preflop retains the exact 169 starting-hand classes. Opponent classes
+are simple rank/suitedness groups, rather than the learned classes from the
+OCHS paper. Flop/turn estimates remain sampled. The asset, feature seed, and
+sample count are embedded in each checkpoint and frozen on resume/inference.
+
+Each node retains the full public action sequence, acting seat, street, card
+cluster, and legal-action mask. Five choices are fold, check/call, small raise,
+pot raise, and all-in. The small opening raise is 2.5 BB; later preflop raises
+are 3× the current bet. Postflop small raises are half pot. Pot sizes include
+the call, amounts round to half-BB units, and duplicate/illegal choices vanish.
+After two raises per street, only the jam raise remains. This produces **13,608
+decision histories** at 100 BB. Card abstraction still has imperfect recall;
+preserving public history does not supply a full-game convergence guarantee.
+
+The default is **Linear external-sampling MCCFR**. After each 10M nodes touched,
+completed batches discount regrets and average sums by the elapsed-period
+ratio; raw visits remain unchanged. `--algorithm vanilla` starts a control run.
+`--discount-every N` changes the period for a fresh run. Algorithm and period
+are recorded and cannot change on resume. Serial resume is exact; parallel
+resume matches an uninterrupted run with the same worker/chunk settings and
+batch boundaries. Snapshots split batches, so keep the same snapshot schedule
+when comparing trajectories. Ctrl+C finishes the current batch and saves.
+
+Select a V5 checkpoint in the existing local browser via **••• → Nodeset**.
+Play uses a persistent native inference process with the embedded abstraction;
+it sends only the agent's cards, visible board, and public actions. Study shows
+a preflop projection combining the raise choices, excluding each source node
+below 1,000 visits before aggregation. Postflop policies stay native, so no
+large JSON export or approximate JavaScript card bucketer is needed. A V5
+selection requires `tools/serve.py`; static hosting keeps the bundled model.
+
+Observed bets outside the trained action choices translate to the nearest
+pot fraction in a virtual 100-BB game. Arena and Play apply chosen sizes to the
+actual legal game. If translated history can no longer follow the real street
+or actor, Play checks/calls; Arena uses the configured missing-node fallback.
+Arena reports translated actions and off-tree decisions. Browser bankrolls
+other than 100 BB remain outside the trained starting-stack game.
+
+```bash
+python agent_arena.py nodesets/cpp/full-v5.bin nodesets/cpp/full-v4.bin \
+  --hands 100000 --seed 17 --output artifacts/arena/v5-v4.json
+python agent_arena.py nodesets/cpp/full-v5.bin baseline:random --hands 100000
+python tools/audit_model.py nodesets/cpp/full-v5.bin
+python cpp/run.py --model v5 --test
+```
+
+Arena also offers `baseline:call` and `baseline:pot`. `--samples` changes legacy
+arena estimates, while V5 always uses its frozen features. These match results
+measure performance against the selected opponent; they are not exploitability.
+See [the review and measured validation](../TRAINING_REVIEW.md).
+
+## Legacy V4 trainer
 
 This is a separate implementation of the original heads-up, 100bb Hold'em
 trainer. The Python trainers, prototypes, and bundled 10M model remain in the
