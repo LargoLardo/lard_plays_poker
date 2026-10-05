@@ -23,7 +23,7 @@ for (const [id, engine, magic] of [["v2", "v4", "LARDCPP4"], ["v3", "v5", "LARDC
     const oid = pointer.match(/^oid sha256:([a-f0-9]{64})$/m)?.[1];
     const size = Number(pointer.match(/^size (\d+)$/m)?.[1]);
     if (!oid || !size) throw new Error(`Invalid checkpoint: ${source}`);
-    const ref = process.env.VERCEL_GIT_COMMIT_SHA || "main";
+    const ref = process.env.VERCEL_GIT_COMMIT_SHA || execFileSync("git", ["rev-parse", "HEAD"], { encoding:"utf8" }).trim();
     const response = await fetch(`https://media.githubusercontent.com/media/LargoLardo/lard_plays_poker/${ref}/${source}`);
     if (!response.ok || !response.body) throw new Error(`Could not download ${source}: ${response.status}`);
     const temporary = `${source}.download`;
