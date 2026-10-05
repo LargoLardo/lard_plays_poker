@@ -2,16 +2,6 @@
 
 ## Play in the browser
 
-The browser table puts you in a first-person poker room, holding your cards
-above green felt and a dark wood rail. A single overhead light picks out
-the table and your opponent's hands; the rest of the room fades into darkness.
-Rigged white-gloved hands hold your cards and gesture when checking or betting.
-Beveled chips slide into bets, collect between streets, and move to the winner.
-Cards leave a visible deck in sequence, and showdown uses staggered, full card
-turnovers. Deals keep moving through quick actions; pots wait for the reveal.
-The scene respects reduced-motion preferences. The hand meshes are bundled locally under the MIT license; see
-[asset provenance](public/assets/hands/SOURCE.md).
-
 Cards, bets, and chip stacks follow the selected strategy, starting with the
 bundled 10-million-iteration full-game model. The filterable 13x13 strategy explorer lives in Study, and the
 player's stack persists between completed hands in browser storage.
