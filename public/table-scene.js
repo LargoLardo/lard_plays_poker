@@ -224,7 +224,7 @@ export async function createTableScene(canvas, host) {
   const handBasis = new THREE.Matrix4().makeBasis(
     new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, -1, 0), new THREE.Vector3(1, 0, 0),
   );
-  function makeHand(side, curl = .3) {
+  function makeHand(side, curl = .16) {
     const group = new THREE.Group();
     const model = cloneSkeleton(handModels[side === "left" ? 0 : 1].scene);
     const wrist = model.getObjectByName("wrist");
@@ -270,7 +270,7 @@ export async function createTableScene(canvas, host) {
     hand.rotation.set(Math.PI / 2, Math.PI, i ? .18 : -.18);
     scene.add(hand);
   });
-  const bettingHand = makeHand("left", .3);
+  const bettingHand = makeHand("left");
   bettingHand.position.set(-1.9, 0, 2.6);
   bettingHand.rotation.set(Math.PI / 2, Math.PI, Math.PI - .7);
   scene.add(bettingHand);
@@ -292,14 +292,36 @@ export async function createTableScene(canvas, host) {
   pocket.add(pocketPose);
   const heldCards = new THREE.Group();
   pocketPose.add(heldCards);
-  // Tuck the fingers below the card edge, with the thumb in front of the face.
-  const grip = makeHand("right", 1.2);
-  grip.position.set(.32, -.76, .32);
-  grip.rotation.set(0, .10, -.30);
+  // Turn the palm toward the cards. The fingers support the backs while the
+  // opposed thumb wraps around the bottom edge and presses on the front card.
+  const grip = makeHand("right", 0);
+  grip.scale.setScalar(2);
+  grip.position.set(.4104, -.96, -.3552);
+  grip.rotation.set(0, 2.9, -.45);
+  for (const [finger, bends] of Object.entries({
+    index: [.4, .35, .04], middle: [.4, .4, .2],
+    ring: [.4, .4, .2], pinky: [.48, .42, .25],
+  })) {
+    ["proximal", "intermediate", "distal"].forEach((joint, i) => {
+      grip.getObjectByName(`${finger}-finger-phalanx-${joint}`).rotateX(-bends[i]);
+    });
+  }
+  const thumb = grip.getObjectByName("thumb-metacarpal");
+  thumb.rotateX(-.8);
+  thumb.rotateY(.48);
+  grip.getObjectByName("thumb-phalanx-proximal").rotateX(-.15);
+  grip.getObjectByName("thumb-phalanx-distal").rotateX(-.1);
+  grip.getObjectByName("thumb-phalanx-distal").rotateY(-.92);
   pocketPose.add(grip);
   foreground.add(new THREE.HemisphereLight("#e1e9e3", "#30372e", 1.6));
   const nearLight = new THREE.DirectionalLight("#ffefda", 2.3);
   nearLight.position.set(-1, 2, 3);
+  nearLight.castShadow = true;
+  nearLight.shadow.mapSize.set(1024, 1024);
+  Object.assign(nearLight.shadow.camera, { left: -2, right: 2, top: 2, bottom: -2, near: .1, far: 10 });
+  nearLight.shadow.camera.updateProjectionMatrix();
+  nearLight.shadow.bias = -.0001;
+  nearLight.shadow.normalBias = .001;
   foreground.add(nearLight);
 
   const cardShape = new THREE.Shape();
@@ -369,8 +391,6 @@ export async function createTableScene(canvas, host) {
     if (held) {
       object.rotation.order = "ZYX";
       object.rotation.set(Math.PI / 2, 0, rotation);
-      object.castShadow = false;
-      object.receiveShadow = false;
     } else {
       const target = { x, z, yaw: rotation, board: slot.startsWith("board") };
       object.userData.target = target;
@@ -677,7 +697,9 @@ export async function createTableScene(canvas, host) {
     let cardsReadyAt = now;
     const signature = JSON.stringify([hole[user], agentCards, board]);
     if (signature !== cardSignature) {
-      hole[user].forEach((card, i) => placeCard(`user-${i}`, card, -.20 + i * .40, i * .045, i ? -.10 : .10, i * 70, true));
+      // Overlap both lower edges inside the grip, with a small parallel gap
+      // between the sheets so the fan never intersects during a deal or fold.
+      hole[user].forEach((card, i) => placeCard(`user-${i}`, card, -.17 + i * .33, i * .014, i ? -.12 : .16, i * 70, true));
       agentCards.forEach((card, i) => {
         cardsReadyAt = Math.max(cardsReadyAt, placeCard(`agent-${i}`, card, -.33 + i * .66, -1.74, Math.PI + (i ? -.035 : .035), 100 + i * 160));
       });
