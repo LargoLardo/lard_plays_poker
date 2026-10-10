@@ -34,6 +34,10 @@ async function waitForMove(page) {
 }
 async function assertFits(page) {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "The page must not scroll horizontally");
+  for (const button of await page.locator('.view-tab, #sessionMenu summary, .actions button').all()) {
+    const box = await button.boundingBox();
+    assert.ok(box.width >= 44 && box.height >= 44, "Action and sizing buttons have comfortable touch targets");
+  }
   for (const id of ["agentSeat", "userSeat", "potLabel"]) {
     const box = await page.locator(`#${id}`).boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= page.viewportSize().width, `${id} must stay inside the viewport`);
@@ -68,6 +72,7 @@ try {
   assert.equal(await smoke.locator("#advancedRaises").isDisabled(), true, "Legacy models do not invent a raise split");
   assert.deepEqual([...handAssets].sort(), ["left.glb", "right.glb"], "Both local hand meshes load");
   assert.equal(await smoke.locator(".hand-meta #potLabel").count(), 1, "Pot stays in the controls");
+  assert.equal(await smoke.locator(".brand strong").textContent(), "Lard Plays Poker");
   await smoke.waitForTimeout(700);
   await assertFits(smoke);
   await screenshot(smoke, "table-desktop");
@@ -274,6 +279,7 @@ try {
   await waitForMove(page);
   assert.equal(await page.locator("#pot").textContent(), "1.5 BB");
   await page.locator("#callButton").click();
+  assert.equal(await page.locator("#lastAction").textContent(), "You call 0.5 BB");
   assert.equal(await page.locator("#raiseSlider").isDisabled(), true, "Sizing must pause on the opponent's turn");
   assert.equal(await page.locator("#tableScene").getAttribute("data-action"), "call");
   await page.waitForSelector('#tableScene[data-animating="true"]');
@@ -332,6 +338,7 @@ try {
   const target = await page.locator("#raiseOutput").textContent();
   await page.locator("#raiseButton").click();
   assert.equal(await page.locator("#userBet strong").textContent(), target);
+  assert.equal(await page.locator("#lastAction").textContent(), `You raise to ${target}`);
   assert.equal(await page.locator("#tableScene").getAttribute("data-action"), "raise");
   await page.waitForSelector('#tableScene[data-animating="true"]');
   await page.waitForTimeout(140);

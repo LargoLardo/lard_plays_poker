@@ -185,7 +185,7 @@ function act(kind, raiseTo = null) {
     if (call <= 0) return;
     game.publicHistory.push([0, 0, 0]);
     game.histories[game.street].push("fold");
-    game.lastAction = `${name(player)} folds`;
+    game.lastAction = actionText(player, "fold");
     finishHand(1 - player, "won by fold");
     return;
   }
@@ -199,13 +199,13 @@ function act(kind, raiseTo = null) {
     game.lastRaise = Math.max(game.lastRaise, target - oldHigh);
     game.pending = new Set([1 - player]);
     game.histories[game.street].push("raise");
-    game.lastAction = `${name(player)} raises to ${fmt(target)}`;
+    game.lastAction = `${actionText(player, "raise")} to ${fmt(target)}`;
   } else {
     game.publicHistory.push([1, 0, 0]);
     pay(player, call);
     game.pending.delete(player);
     game.histories[game.street].push("check/call");
-    game.lastAction = call ? `${name(player)} calls ${fmt(call)}` : `${name(player)} checks`;
+    game.lastAction = call ? `${actionText(player, "call")} ${fmt(call)}` : actionText(player, "check");
   }
 
   if (game.stacks[1 - player] === 0) game.pending.delete(1 - player);
@@ -254,7 +254,7 @@ function finishHand(winner, reason, potAlreadyCollected = false) {
   else game.stacks[winner] += game.pot;
   bankroll = [game.stacks[game.user], game.stacks[game.agent]];
   saveProgress();
-  game.result = winner === null ? "The pot is split" : `${name(winner)} wins ${fmt(game.pot)}`;
+  game.result = winner === null ? "The pot is split" : `${actionText(winner, "win")} ${fmt(game.pot)}`;
   game.lastAction = reason;
   game.finished = true; game.actor = null; game.reveal = true; game.winner = winner;
   render();
@@ -262,6 +262,7 @@ function finishHand(winner, reason, potAlreadyCollected = false) {
 }
 
 function name(player) { return player === game.user ? "You" : "Lard"; }
+function actionText(player, verb) { return `${name(player)} ${verb}${player === game.user ? "" : "s"}`; }
 
 function cardMarkup(card, hidden = false) {
   if (hidden) return '<span class="card back" aria-label="Hidden card"></span>';
