@@ -580,15 +580,16 @@ export async function createTableScene(canvas, host) {
   }
 
   function cameraPosition() {
-    const distance = 4.3 / camera.aspect;
-    return new THREE.Vector3(pointer.x * .045, mobile ? distance * .608 : 2.65, mobile ? 1.1 + distance * .797 : 4.65);
+    // Sit closer to the board, leaving enough width for the full river on narrow screens.
+    const distance = mobile ? 4 / camera.aspect : Math.max(3.9, 4 / camera.aspect + .45);
+    return new THREE.Vector3(pointer.x * .045, mobile ? distance * .608 : .05 + distance * .535, mobile ? 1.1 + distance * .797 : .55 + distance * .845);
   }
   function positionPocket() {
     const width = host.clientWidth, height = host.clientHeight;
     const depth = 1.75;
     const unitsPerPixel = 2 * depth * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / height;
     const cardHeight = Math.min(mobile ? 142 : 215, height * .25);
-    const centerY = height - cardHeight * .56 - (mobile ? 58 : 70);
+    const centerY = height - cardHeight * .56 - (mobile ? 30 : 70);
     pocket.scale.setScalar(cardHeight * unitsPerPixel / .84);
     pocket.position.set(width * (mobile ? .16 : .27) * unitsPerPixel, (height / 2 - centerY) * unitsPerPixel, -depth);
     pocket.rotation.z = -.025;
@@ -600,7 +601,7 @@ export async function createTableScene(canvas, host) {
     previousTime = time;
     const desired = cameraPosition();
     camera.position.lerp(desired, reducedMotion.matches ? 1 : 1 - Math.exp(-delta * 8));
-    camera.lookAt(0, .05, mobile ? 1.1 : .55);
+    camera.lookAt(0, .05, mobile ? .85 : .55);
     // Keep queued deals before their reveals, even when a slow frame or a
     // reduced-motion change finishes both animations at once.
     for (let i = 0; i < moving.length;) {
