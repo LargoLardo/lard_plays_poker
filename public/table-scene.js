@@ -591,7 +591,7 @@ export async function createTableScene(canvas, host) {
     const cardHeight = Math.min(mobile ? 142 : 215, height * .25);
     const centerY = height - cardHeight * .56 - (mobile ? 30 : 70);
     pocket.scale.setScalar(cardHeight * unitsPerPixel / .84);
-    pocket.position.set(width * (mobile ? .16 : .27) * unitsPerPixel, (height / 2 - centerY) * unitsPerPixel, -depth);
+    pocket.position.set(width * (mobile ? .05 : .1) * unitsPerPixel, (height / 2 - centerY) * unitsPerPixel, -depth);
     pocket.rotation.z = -.025;
   }
   function draw(time) {
